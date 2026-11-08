@@ -119,12 +119,6 @@ jobs:
         with:
           subject-path: 'release-assets/*'
 
-      - name: Upload release artifacts
-        uses: actions/upload-artifact@v6
-        with:
-          name: roseNG-v${{ steps.version.outputs.version }}-release
-          path: release-assets/*
-
       - name: Create stable draft GitHub Release (tag v${{ steps.version.outputs.version }})
         if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
@@ -135,7 +129,9 @@ jobs:
           name: v${{ steps.version.outputs.version }}
           target_commitish: ${{ github.sha }}
           body: |
-            **Release assets**
+            **APKs**
+            - `roseNG-v${{ steps.version.outputs.version }}-universal.apk` — recommended for most devices
+            - `roseNG-v${{ steps.version.outputs.version }}-arm64-v8a.apk` — 64-bit ARM (arm64-v8a) devices
           files: release-assets/*
           generate_release_notes: true
 
