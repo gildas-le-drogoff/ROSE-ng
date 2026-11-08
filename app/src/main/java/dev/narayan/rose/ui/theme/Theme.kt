@@ -11,7 +11,7 @@ import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import dev.narayan.rose.ThemeMode
+import dev.narayan.rose.domain.model.ThemeMode
 
 private val DarkColorScheme = darkColorScheme(
     primary = Purple80,
@@ -25,15 +25,6 @@ private val LightColorScheme = lightColorScheme(
     tertiary = Pink40
 )
 
-/**
- * Forces every surface-related color token to true black (or near-black)
- * so ALL components (Scaffold, ListItem, Card, DropdownMenu, Dialogs,
- * NavigationDrawer, ...) pick it up automatically because they all read
- * from MaterialTheme.colorScheme, not from a value passed down manually.
- * This is the fix for "AMOLED toggle doesn't do anything": previously
- * only two composables (Scaffold + top bar) were manually recolored,
- * so list items, dialogs, and the drawer never changed.
- */
 private fun ColorScheme.toAmoled(): ColorScheme = this.copy(
     background = Color.Black,
     surface = Color.Black,
@@ -49,7 +40,6 @@ private fun ColorScheme.toAmoled(): ColorScheme = this.copy(
 fun RoseTheme(
     themeMode: ThemeMode = ThemeMode.SYSTEM,
     amoled: Boolean = false,
-    // Dynamic color is available on Android 12+
     dynamicColor: Boolean = true,
     content: @Composable () -> Unit
 ) {

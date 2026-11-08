@@ -7,13 +7,6 @@ import androidx.core.content.edit
 enum class ThemeMode { SYSTEM, LIGHT, DARK }
 enum class StartPage { HOME, ALL_FILES }
 
-/**
- * Small wrapper around SharedPreferences so every user-facing setting
- * (theme, AMOLED mode, view mode, sort order, etc.) survives app restarts.
- * This is what was missing before: the old code kept settings only in
- * memory (mutableStateOf), so they silently reset every time the app
- * process was killed.
- */
 class SettingsManager(context: Context) {
 
     private val prefs: SharedPreferences =
@@ -63,10 +56,6 @@ class SettingsManager(context: Context) {
         get() = prefs.getBoolean(KEY_SHOW_EXTENSIONS, true)
         set(value) = prefs.edit { putBoolean(KEY_SHOW_EXTENSIONS, value) }
 
-    // Whether to draw thin divider lines between items in file/folder lists
-    // (Recent files, Quick access, and the main file browser list). Lets the
-    // user make the divider style consistent everywhere, or turn it off
-    // entirely for a cleaner, line-free look.
     var showListDividers: Boolean
         get() = prefs.getBoolean(KEY_SHOW_LIST_DIVIDERS, true)
         set(value) = prefs.edit { putBoolean(KEY_SHOW_LIST_DIVIDERS, value) }
@@ -103,17 +92,10 @@ class SettingsManager(context: Context) {
         get() = prefs.getBoolean(KEY_USE_ROOT, false)
         set(value) = prefs.edit { putBoolean(KEY_USE_ROOT, value) }
 
-    // ----- Quick access (Home screen) -----
-    // Default quick-access folders (Downloads/Camera/Documents) that the user
-    // has long-press-removed. Stored by a stable id, not path, since the
-    // underlying path can vary by device/storage layout.
     var quickAccessRemoved: Set<String>
         get() = prefs.getStringSet(KEY_QUICK_ACCESS_REMOVED, emptySet()) ?: emptySet()
         set(value) = prefs.edit { putStringSet(KEY_QUICK_ACCESS_REMOVED, value) }
 
-    // Custom folders the user has added to quick access, stored as absolute
-    // paths joined with a delimiter to preserve the order they were added in
-    // (SharedPreferences string sets don't guarantee ordering).
     var quickAccessCustomPaths: List<String>
         get() {
             val raw = prefs.getString(KEY_QUICK_ACCESS_CUSTOM, "") ?: return emptyList()
@@ -141,7 +123,6 @@ class SettingsManager(context: Context) {
             prefs.edit { putString(KEY_QUICK_ACCESS_CUSTOM, result.joinToString(QUICK_ACCESS_DELIMITER)) }
         }
 
-    // Favourite files chosen by user, stored as absolute paths joined with delimiter
     var favouriteFiles: List<String>
         get() {
             val raw = prefs.getString(KEY_FAVOURITE_FILES, "") ?: return emptyList()
@@ -169,9 +150,6 @@ class SettingsManager(context: Context) {
             prefs.edit { putString(KEY_FAVOURITE_FILES, result.joinToString(QUICK_ACCESS_DELIMITER)) }
         }
 
-
-    // Last-scanned category counts (keyed by FileType.name), persisted so cold launches
-    // show real counts immediately without flashing 0 or waiting for MediaStore query.
     var cachedCategoryCounts: Map<String, Int>
         get() = prefs.getString(KEY_CACHED_CATEGORY_COUNTS, "")
             ?.split(QUICK_ACCESS_DELIMITER)
@@ -228,10 +206,6 @@ class SettingsManager(context: Context) {
         get() = prefs.getStringSet(KEY_EXCLUDED_FOLDERS, emptySet()) ?: emptySet()
         set(value) = prefs.edit { putStringSet(KEY_EXCLUDED_FOLDERS, value) }
 
-    // Whether the contextual notification-permission primer (shown the first
-    // time a background file operation starts) has already been presented once.
-    // We only ever ask this way once - if the user dismisses it, we respect
-    // that instead of nagging on every subsequent transfer/download.
     var notificationPrimerShown: Boolean
         get() = prefs.getBoolean(KEY_NOTIFICATION_PRIMER_SHOWN, false)
         set(value) = prefs.edit { putBoolean(KEY_NOTIFICATION_PRIMER_SHOWN, value) }

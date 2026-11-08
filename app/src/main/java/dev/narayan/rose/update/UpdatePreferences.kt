@@ -53,7 +53,6 @@ class UpdatePreferences(private val context: Context) {
                 prefs[KEY_LAST_CHECK_TIME] = timeMs
             }
         } catch (e: Exception) {
-            // Fail silently on persistent write failure
         }
     }
 
@@ -71,7 +70,6 @@ class UpdatePreferences(private val context: Context) {
                 prefs[KEY_AUTO_CHECK_ENABLED] = enabled
             }
         } catch (e: Exception) {
-            // Fail silently
         }
     }
 
@@ -89,7 +87,6 @@ class UpdatePreferences(private val context: Context) {
                 prefs[KEY_SKIPPED_VERSION] = version
             }
         } catch (e: Exception) {
-            // Fail silently
         }
     }
 
@@ -99,7 +96,6 @@ class UpdatePreferences(private val context: Context) {
                 prefs.remove(KEY_SKIPPED_VERSION)
             }
         } catch (e: Exception) {
-            // Fail silently
         }
     }
 
@@ -109,4 +105,3 @@ class UpdatePreferences(private val context: Context) {
         val KEY_SKIPPED_VERSION = stringPreferencesKey("skipped_version")
     }
 }
-

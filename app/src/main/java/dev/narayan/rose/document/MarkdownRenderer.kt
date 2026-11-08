@@ -1,6 +1,7 @@
 package dev.narayan.rose.document
 
 import android.content.Context
+import dev.narayan.rose.ui.icons.AppIcons
 import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -10,11 +11,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.ClickableText
 import androidx.compose.foundation.text.selection.SelectionContainer
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.BrokenImage
-import androidx.compose.material.icons.filled.CheckBox
-import androidx.compose.material.icons.filled.CheckBoxOutlineBlank
-import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -54,6 +50,7 @@ import org.commonmark.ext.gfm.tables.TablesExtension
 import org.commonmark.node.*
 import org.commonmark.parser.Parser
 import java.io.File
+import dev.narayan.rose.ui.explorer.*
 
 object MarkdownParserFactory {
     val parser: Parser by lazy {
@@ -66,15 +63,6 @@ object MarkdownParserFactory {
     }
 }
 
-/**
- * Sanitizes and normalizes loose or user-typed Markdown input before passing to CommonMark.
- * Handles:
- * - Unclosed formatting delimiters (e.g. `**this is a try sentence` -> `**this is a try sentence**`)
- * - Spaces inside delimiters (e.g. `** bold **` -> `**bold**`)
- * - Headings missing space after hash (e.g. `#Heading` -> `# Heading`)
- * - Inline HTML tags (e.g. `<b>`, `<i>`, `<del>`, `<br>`)
- * - Preserves code blocks and thematic breaks untouched.
- */
 object MarkdownSanitizer {
     private val headingRegex = Regex("""^(#{1,6})([^\s#].*)$""")
     private val boldSpaceRegex = Regex("""\*\*\s+([^\*\n]+?)\s+\*\*""")
@@ -114,25 +102,21 @@ object MarkdownSanitizer {
 
             var line = originalLine
 
-            // 1. Heading without space (e.g. #Heading -> # Heading)
             line = headingRegex.replace(line) { m ->
                 "${m.groupValues[1]} ${m.groupValues[2]}"
             }
 
-            // 2. Inline HTML replacements
             line = brHtmlRegex.replace(line, "  \n")
             line = boldHtmlRegex.replace(line) { "**${it.groupValues[1]}**" }
             line = italicHtmlRegex.replace(line) { "*${it.groupValues[1]}*" }
             line = strikeHtmlRegex.replace(line) { "~~${it.groupValues[1]}~~" }
             line = codeHtmlRegex.replace(line) { "`" + it.groupValues[1] + "`" }
 
-            // 3. Remove invalid spaces inside delimiters
             line = boldSpaceRegex.replace(line, "**$1**")
             line = boldLeadingSpaceRegex.replace(line, "**$1**")
             line = boldTrailingSpaceRegex.replace(line, "**$1**")
             line = strikeSpaceRegex.replace(line, "~~$1~~")
 
-            // 4. Auto-close unclosed delimiters on this line
             line = closeUnclosedDelimiters(line)
 
             result.append(line)
@@ -144,32 +128,27 @@ object MarkdownSanitizer {
 
     private fun closeUnclosedDelimiters(line: String): String {
         val trimmed = line.trim()
-        // Skip horizontal rules
         if (trimmed == "***" || trimmed == "---" || trimmed == "___" || trimmed == "* * *") {
             return line
         }
 
         var processed = line
 
-        // Check for unclosed backticks
         val backtickCount = processed.count { it == '`' }
         if (backtickCount % 2 != 0) {
             processed = "$processed`"
         }
 
-        // Check for unclosed strikethrough ~~
         val tildeCount = countOccurrences(processed, "~~")
         if (tildeCount % 2 != 0) {
             processed = "$processed~~"
         }
 
-        // Check for unclosed bold **
         val boldCount = countOccurrences(processed, "**")
         if (boldCount % 2 != 0) {
             processed = "$processed**"
         }
 
-        // Check for unclosed italic *
         val placeholder = "\u0000\u0000"
         val withoutBold = processed.replace("**", placeholder)
         val singleAsteriskCount = withoutBold.count { it == '*' }
@@ -199,9 +178,6 @@ object MarkdownSanitizer {
     }
 }
 
-/**
- * Top-level Composable for rendering Markdown documents with full fidelity.
- */
 @Composable
 fun MarkdownDocument(
     markdown: String,
@@ -236,7 +212,6 @@ fun MarkdownDocument(
     }
 
     if (parsedDocument == null) {
-        // Fallback for parser failure
         Text(
             text = markdown,
             style = MaterialTheme.typography.bodyMedium,
@@ -264,9 +239,6 @@ fun MarkdownDocument(
     }
 }
 
-/**
- * Backwards-compatible Drop-in replacement for naive MarkdownText.
- */
 @Composable
 fun MarkdownText(
     text: String,
@@ -352,7 +324,6 @@ private fun MarkdownNodeRenderer(
             )
         }
         is HtmlBlock -> {
-            // Render HTML blocks as formatted raw text safely
             val plain = node.literal.replace(Regex("<[^>]*>"), "")
             if (plain.isNotBlank()) {
                 Text(
@@ -363,7 +334,6 @@ private fun MarkdownNodeRenderer(
             }
         }
         else -> {
-            // For any other block types, render inline text if present
             val annotatedString = buildInlineAnnotatedString(node, MaterialTheme.colorScheme.primary)
             if (annotatedString.isNotBlank()) {
                 MarkdownClickableText(annotatedString, defaultStyle, defaultColor, baseDir, onLinkClick)
@@ -421,7 +391,6 @@ private fun MarkdownParagraph(
     defaultStyle: TextStyle,
     defaultColor: Color
 ) {
-    // Check if the paragraph contains image nodes
     var containsImages = false
     var child = paragraph.firstChild
     while (child != null) {
@@ -433,7 +402,6 @@ private fun MarkdownParagraph(
     }
 
     if (containsImages) {
-        // If images are present, render block images and surrounding text separately
         var currentChild = paragraph.firstChild
         while (currentChild != null) {
             if (currentChild is Image) {
@@ -515,7 +483,6 @@ private fun MarkdownListItem(
     index: Int,
     depth: Int
 ) {
-    // Check if task list item [ ] or [x]
     var isTaskChecked: Boolean? = null
     val firstChild = listItem.firstChild
     if (firstChild is MdParagraph && firstChild.firstChild is Text) {
@@ -540,7 +507,7 @@ private fun MarkdownListItem(
         ) {
             if (isTaskChecked != null) {
                 Icon(
-                    imageVector = if (isTaskChecked) Icons.Default.CheckBox else Icons.Default.CheckBoxOutlineBlank,
+                    imageVector = if (isTaskChecked) AppIcons.CheckBox else AppIcons.CheckBoxOutlineBlank,
                     contentDescription = if (isTaskChecked) "Checked" else "Unchecked",
                     tint = if (isTaskChecked) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.size(18.dp)
@@ -595,7 +562,6 @@ private fun MarkdownCodeBlock(code: String, language: String?) {
         modifier = Modifier.fillMaxWidth()
     ) {
         Column {
-            // Code block header with language and copy button
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -618,7 +584,7 @@ private fun MarkdownCodeBlock(code: String, language: String?) {
                     modifier = Modifier.size(28.dp)
                 ) {
                     Icon(
-                        imageVector = Icons.Default.ContentCopy,
+                        imageVector = AppIcons.ContentCopy,
                         contentDescription = stringResource(R.string.doc_copy_code),
                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.size(15.dp)
@@ -694,7 +660,7 @@ private fun MarkdownTable(
     baseDir: File?,
     onLinkClick: ((String) -> Unit)?
 ) {
-    val tableRows = mutableListOf<Pair<Boolean, List<TableCell>>>() // (isHeader, cells)
+    val tableRows = mutableListOf<Pair<Boolean, List<TableCell>>>()
 
     var child = tableBlock.firstChild
     while (child != null) {
@@ -865,7 +831,7 @@ private fun MarkdownImage(image: Image, baseDir: File?) {
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Icon(
-                            Icons.Default.BrokenImage,
+                            AppIcons.BrokenImage,
                             contentDescription = null,
                             tint = MaterialTheme.colorScheme.error,
                             modifier = Modifier.size(20.dp)
@@ -904,7 +870,6 @@ private fun MarkdownClickableText(
                     if (onLinkClick != null) {
                         onLinkClick(url)
                     } else {
-                        // Check if it's a relative link to another local file
                         if (!url.startsWith("http://") && !url.startsWith("https://") && baseDir != null) {
                             val localTarget = File(baseDir, url)
                             if (localTarget.exists()) {
@@ -915,7 +880,6 @@ private fun MarkdownClickableText(
                         try {
                             uriHandler.openUri(url)
                         } catch (e: Exception) {
-                            // Ignored or unsupported scheme
                         }
                     }
                 }
@@ -923,9 +887,6 @@ private fun MarkdownClickableText(
     )
 }
 
-/**
- * Recursively builds an AnnotatedString from inline CommonMark AST nodes.
- */
 private fun buildInlineAnnotatedString(
     parentNode: Node,
     primaryColor: Color

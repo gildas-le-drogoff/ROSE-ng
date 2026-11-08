@@ -12,7 +12,7 @@ sealed class StorageDevice {
     abstract val path: String
     abstract val totalBytes: Long
     abstract val availableBytes: Long
-    abstract val iconRes: Int? // Optional icon resource override
+    abstract val iconRes: Int?
     open val isLocked: Boolean get() = false
 
     data class Physical(

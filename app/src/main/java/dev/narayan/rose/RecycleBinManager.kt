@@ -15,13 +15,13 @@ data class RecycledItem(
     val deletionTime: Long,
     val size: Long,
     val isDirectory: Boolean,
-    val binPath: String? = null // Path to the recycle bin containing this item
+    val binPath: String? = null
 )
 
 object RecycleBinManager {
     private const val RECYCLE_BIN_FOLDER = ".rose_recycle_bin"
     private const val METADATA_FILE = "metadata.json"
-    private const val RETENTION_PERIOD_MS = 30L * 24 * 60 * 60 * 1000 // 30 days
+    private const val RETENTION_PERIOD_MS = 30L * 24 * 60 * 60 * 1000
 
     private val lock = Any()
 
@@ -74,22 +74,12 @@ object RecycleBinManager {
     }
 
     private fun writeTextInternal(context: Context, file: File, text: String): Boolean {
-        // Write atomically: write to a temp file first, then rename/move it
-        // over the destination. `loadMetadata()` treats any parse failure as
-        // "no items", so a metadata.json left half-written by a process death
-        // mid-write used to be able to silently make the whole recycle bin
-        // look empty, even though the underlying recycled files were still
-        // on disk. Renaming a fully-written temp file avoids ever exposing a
-        // torn write.
         try {
             val parent = file.parentFile
             if (parent != null && !parent.exists()) parent.mkdirs()
             val tempFile = File(parent, "${file.name}.tmp-${UUID.randomUUID()}")
             tempFile.writeText(text)
             if (tempFile.renameTo(file)) return true
-            // renameTo can fail on some filesystem/provider edge cases even
-            // within the same directory - fall back to a direct write and
-            // clean up the leftover temp file either way.
             return try {
                 file.writeText(text)
                 true
@@ -97,10 +87,6 @@ object RecycleBinManager {
                 tempFile.delete()
             }
         } catch (e: Exception) {
-            // Direct java.io write failed (e.g. a restricted path Shizuku
-            // has to handle) - fall back to a Shizuku-mediated atomic write:
-            // write the full content to a temp file in our own cache dir,
-            // then `mv` it into place in one shell operation.
             if (ShizukuManager.isAvailable() && ShizukuManager.hasPermission()) {
                 val tempFile = File(context.cacheDir, "rose_meta_tmp_${UUID.randomUUID()}.json")
                 return try {
@@ -128,12 +114,9 @@ object RecycleBinManager {
     private fun getRecycleBinDirs(context: Context): List<File> {
         val dirs = mutableListOf<File>()
 
-        // 1. Primary storage root - instant renameTo target
         val primary = Environment.getExternalStorageDirectory()
         dirs.add(File(primary, RECYCLE_BIN_FOLDER))
 
-        // 2. SD Cards and other volumes - each should have its own trash at root
-        // so that renameTo remains an instant same-volume operation.
         try {
             val sm = context.getSystemService(Context.STORAGE_SERVICE) as StorageManager
             sm.storageVolumes.forEach { volume ->
@@ -153,7 +136,6 @@ object RecycleBinManager {
             }
         } catch (e: Exception) {}
 
-        // Fallback: app-specific directories (slowest, but always writable)
         context.getExternalFilesDirs(null).forEach { baseDir ->
             if (baseDir != null) {
                 val binDir = File(baseDir, RECYCLE_BIN_FOLDER)
@@ -171,7 +153,6 @@ object RecycleBinManager {
         val absolutePath = file.absolutePath
         val bins = getRecycleBinDirs(context)
 
-        // Find the bin on the SAME volume as the file.
         return bins.find { bin ->
             val binRoot = bin.parentFile?.absolutePath ?: "???"
             absolutePath.startsWith(binRoot)
@@ -276,7 +257,6 @@ object RecycleBinManager {
                 binPath = recycleBinDir.absolutePath
             )
 
-            // Priority 1: Shizuku move (Super fast, bypasses most restrictions)
             val moved = if (ShizukuManager.isAvailable() && ShizukuManager.hasPermission()) {
                 val cleanSrc = ShizukuManager.normalize(file.absolutePath)
                 val cleanDest = ShizukuManager.normalize(destination.absolutePath)
@@ -294,7 +274,6 @@ object RecycleBinManager {
                 }
                 success
             } else {
-                // Fallback for cross-volume move if renameTo fails
                 var totalSize = 0L
                 fun fastScan(f: File) {
                     if (f.isFile) totalSize += f.length()
@@ -332,7 +311,6 @@ object RecycleBinManager {
             false
         }
     }
-
 
     private fun copyWithProgress(source: File, target: File, onProgress: ((Long, Long) -> Unit)?): Boolean {
         return try {
@@ -383,7 +361,6 @@ object RecycleBinManager {
 
     fun restore(context: Context, item: RecycledItem, onProgress: ((Long, Long) -> Unit)? = null): Boolean {
         val binDir = if (item.binPath != null) File(item.binPath) else {
-            // Fallback: search all bins if binPath is missing
             getRecycleBinDirs(context).find { existsInternal(File(it, item.id)) }
         } ?: return false
 
@@ -402,7 +379,6 @@ object RecycleBinManager {
         targetFile.parentFile?.let { mkdirsInternal(it) }
 
         return try {
-            // Priority 1: Shizuku move (Instant and reliable)
             val moved = if (ShizukuManager.isAvailable() && ShizukuManager.hasPermission()) {
                 val cleanSrc = ShizukuManager.normalize(recycledFile.absolutePath)
                 val cleanDest = ShizukuManager.normalize(targetFile.absolutePath)
@@ -420,7 +396,6 @@ object RecycleBinManager {
                 }
                 success
             } else {
-                // Fallback for cross-volume move
                 var totalSize = 0L
 
                 fun fastScan(f: File) {
@@ -514,13 +489,6 @@ object RecycleBinManager {
     private fun cleanupExpired(context: Context) {
         val now = System.currentTimeMillis()
         getRecycleBinDirs(context).forEach { binDir ->
-            // The whole read-modify-write cycle (load metadata, decide what's
-            // expired, delete those files, write the pruned metadata back)
-            // must happen under the same lock used by recycle()/restore()/
-            // deletePermanently(). Previously this ran unlocked: a recycle()
-            // finishing in between this method's load and its later save
-            // could have its brand-new metadata entry silently overwritten
-            // and lost, since save always replaces the whole file.
             synchronized(lock) {
                 val metadata = loadMetadata(context, binDir)
                 val toRemove = mutableListOf<String>()

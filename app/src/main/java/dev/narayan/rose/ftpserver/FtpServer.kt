@@ -1,5 +1,7 @@
 package dev.narayan.rose.ftpserver
 
+import dev.narayan.rose.roseNGLog
+
 import org.apache.ftpserver.ConnectionConfigFactory
 import org.apache.ftpserver.FtpServer
 import org.apache.ftpserver.FtpServerFactory
@@ -48,7 +50,7 @@ class FtpServer(
         try {
             server?.stop()
         } catch (e: Exception) {
-            e.printStackTrace()
+            roseNGLog.e("FtpServer", e) { "FtpServer.stop() failed" }
         } finally {
             server = null
         }

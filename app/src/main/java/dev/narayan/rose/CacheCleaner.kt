@@ -1,32 +1,16 @@
 package dev.narayan.rose
 
 import android.content.Context
-import android.util.Log
 import coil.imageLoader
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
 
-// CacheCleaner performs a deep clean of all temporary and cached files across
-// both internal (cacheDir) and external (externalCacheDir) storage.
-//
-// This addresses cache bloating caused by:
-// 1. Viewing/opening files from restricted storage (Android/data, Android/obb) which were
-//    streamed or copied to cache (open_restricted_).
-// 2. Sharing files from restricted storage (shared_restricted_).
-// 3. Sharing extracted files from archives (share_).
-// 4. Opening archive files for preview (view_archives).
-// 5. Temporary zip extracts (temp_extract).
-// 6. Temporary opened files (temp_open_).
-// 7. Temporary video thumbnail frames (thumb_).
-// 8. Atomic metadata temp files (rose_meta_tmp_).
-// 9. Downloaded update APKs (rose-update.apk).
-// 10. Unbounded Coil image cache.
 @OptIn(coil.annotation.ExperimentalCoilApi::class)
 object CacheCleaner {
 
     private const val TAG = "CacheCleaner"
-    private const val MAX_COIL_DISK_CACHE_BYTES = 25L * 1024L * 1024L // 25MB cap
+    private const val MAX_COIL_DISK_CACHE_BYTES = 25L * 1024L * 1024L
 
     fun getCacheDirs(context: Context): List<File> {
         val cacheDirs = mutableListOf<File>()
@@ -44,17 +28,16 @@ object CacheCleaner {
                 cleanDirectory(dir)
             }
 
-            // Also check Coil disk cache
             try {
                 val diskCache = context.imageLoader.diskCache
                 if (diskCache != null && diskCache.size > MAX_COIL_DISK_CACHE_BYTES) {
                     diskCache.clear()
                 }
             } catch (e: Throwable) {
-                Log.w(TAG, "Error trimming Coil disk cache: ${e.message}")
+                roseNGLog.w(TAG) { "Error trimming Coil disk cache: ${e.message}" }
             }
         } catch (e: Throwable) {
-            Log.e(TAG, "Error running cleanAllCache", e)
+            roseNGLog.e(TAG, e) { "Error running cleanAllCache" }
         }
     }
 

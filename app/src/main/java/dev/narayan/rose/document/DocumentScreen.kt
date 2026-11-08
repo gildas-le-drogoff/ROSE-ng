@@ -1,6 +1,7 @@
 package dev.narayan.rose.document
 
 import android.content.Context
+import dev.narayan.rose.ui.icons.AppIcons
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.*
@@ -25,10 +26,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.automirrored.filled.OpenInNew
-import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -129,7 +126,6 @@ fun DocumentScreen(
         }
     }
 
-    // Auto-focus search text field and show keyboard when search opens
     LaunchedEffect(isSearching) {
         if (isSearching) {
             delay(120)
@@ -149,7 +145,6 @@ fun DocumentScreen(
 
     val isDirty by remember { derivedStateOf { content != originalContent } }
 
-    // Load file content on background thread
     LaunchedEffect(source) {
         isLoading = true
         errorMessage = null
@@ -212,7 +207,6 @@ fun DocumentScreen(
         }
     }
 
-    // Protect unsaved changes on back / return to view mode first
     BackHandler {
         handleBack()
     }
@@ -269,7 +263,6 @@ fun DocumentScreen(
         }
     }
 
-    // Modern Unsaved Changes Confirmation Dialog
     if (showUnsavedDialog) {
         Dialog(
             onDismissRequest = { showUnsavedDialog = false },
@@ -288,7 +281,6 @@ fun DocumentScreen(
                     modifier = Modifier.padding(24.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    // Header Icon Badge
                     Box(
                         modifier = Modifier
                             .size(56.dp)
@@ -299,7 +291,7 @@ fun DocumentScreen(
                         contentAlignment = Alignment.Center
                     ) {
                         Icon(
-                            imageVector = Icons.Default.Save,
+                            imageVector = AppIcons.Save,
                             contentDescription = null,
                             tint = MaterialTheme.colorScheme.primary,
                             modifier = Modifier.size(28.dp)
@@ -308,7 +300,6 @@ fun DocumentScreen(
 
                     Spacer(modifier = Modifier.height(16.dp))
 
-                    // Title
                     Text(
                         text = stringResource(R.string.doc_unsaved_title),
                         style = MaterialTheme.typography.headlineSmall,
@@ -319,7 +310,6 @@ fun DocumentScreen(
 
                     Spacer(modifier = Modifier.height(16.dp))
 
-                    // File Badge Card
                     Surface(
                         color = MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.5f),
                         shape = RoundedCornerShape(14.dp),
@@ -330,7 +320,7 @@ fun DocumentScreen(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Icon(
-                                imageVector = Icons.Default.Description,
+                                imageVector = AppIcons.Description,
                                 contentDescription = null,
                                 tint = MaterialTheme.colorScheme.primary,
                                 modifier = Modifier.size(22.dp)
@@ -356,7 +346,6 @@ fun DocumentScreen(
 
                     Spacer(modifier = Modifier.height(12.dp))
 
-                    // Description
                     Text(
                         text = stringResource(R.string.doc_unsaved_message, source.title),
                         style = MaterialTheme.typography.bodyMedium,
@@ -367,12 +356,10 @@ fun DocumentScreen(
 
                     Spacer(modifier = Modifier.height(24.dp))
 
-                    // Action Buttons - Clean Modern Vertical Stack
                     Column(
                         modifier = Modifier.fillMaxWidth(),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        // 1. Save (Primary filled button)
                         Button(
                             onClick = {
                                 showUnsavedDialog = false
@@ -391,7 +378,7 @@ fun DocumentScreen(
                             )
                         ) {
                             Icon(
-                                imageVector = Icons.Default.Save,
+                                imageVector = AppIcons.Save,
                                 contentDescription = null,
                                 modifier = Modifier.size(18.dp)
                             )
@@ -403,7 +390,6 @@ fun DocumentScreen(
                             )
                         }
 
-                        // 2. Discard (Outlined destructive button)
                         OutlinedButton(
                             onClick = {
                                 showUnsavedDialog = false
@@ -421,7 +407,7 @@ fun DocumentScreen(
                             border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.45f))
                         ) {
                             Icon(
-                                imageVector = Icons.Default.DeleteOutline,
+                                imageVector = AppIcons.DeleteOutline,
                                 contentDescription = null,
                                 modifier = Modifier.size(18.dp)
                             )
@@ -433,7 +419,6 @@ fun DocumentScreen(
                             )
                         }
 
-                        // 3. Keep Editing (Subtle text button)
                         TextButton(
                             onClick = { showUnsavedDialog = false },
                             modifier = Modifier
@@ -456,7 +441,6 @@ fun DocumentScreen(
         }
     }
 
-    // Document Details / Stats Dialog
     if (showInfoDialog) {
         val stats = remember(content, byteSize, charsetName, lineEnding) {
             DocumentStats.compute(content, byteSize, charsetName, lineEnding)
@@ -466,7 +450,7 @@ fun DocumentScreen(
             onDismissRequest = { showInfoDialog = false },
             shape = RoundedCornerShape(28.dp),
             containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-            icon = { Icon(Icons.Default.Info, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
+            icon = { Icon(AppIcons.Info, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
             title = { Text(stringResource(R.string.doc_info), fontWeight = FontWeight.Bold) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -553,13 +537,12 @@ fun DocumentScreen(
                         handleBack()
                     }) {
                         Icon(
-                            Icons.AutoMirrored.Filled.ArrowBack,
+                            AppIcons.ArrowBack,
                             contentDescription = stringResource(R.string.content_desc_back)
                         )
                     }
                 },
                 actions = {
-                    // Search toggle
                     IconButton(onClick = {
                         isSearching = !isSearching
                         if (!isSearching) {
@@ -568,26 +551,24 @@ fun DocumentScreen(
                         }
                     }) {
                         Icon(
-                            imageVector = Icons.Default.Search,
+                            imageVector = AppIcons.Search,
                             contentDescription = stringResource(R.string.action_search),
                             tint = if (isSearching) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
                         )
                     }
 
-                    // Edit button (only visible in VIEW mode)
                     if (currentMode == DocumentMode.VIEW) {
                         IconButton(onClick = {
                             currentMode = DocumentMode.EDIT
                         }) {
                             Icon(
-                                imageVector = Icons.Default.Edit,
+                                imageVector = AppIcons.Edit,
                                 contentDescription = stringResource(R.string.doc_edit),
                                 tint = MaterialTheme.colorScheme.onSurface
                             )
                         }
                     }
 
-                    // Save button
                     if (!source.isReadOnly && currentMode == DocumentMode.EDIT) {
                         IconButton(
                             onClick = { saveDocument() },
@@ -597,7 +578,7 @@ fun DocumentScreen(
                                 CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
                             } else {
                                 Icon(
-                                    imageVector = Icons.Default.Save,
+                                    imageVector = AppIcons.Save,
                                     contentDescription = stringResource(R.string.doc_save),
                                     tint = if (isDirty) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
                                 )
@@ -605,10 +586,9 @@ fun DocumentScreen(
                         }
                     }
 
-                    // Overflow Menu
                     Box {
                         IconButton(onClick = { showOverflowMenu = true }) {
-                            Icon(Icons.Default.MoreVert, contentDescription = stringResource(R.string.content_desc_more_options))
+                            Icon(AppIcons.MoreVert, contentDescription = stringResource(R.string.content_desc_more_options))
                         }
                         DropdownMenu(
                             expanded = showOverflowMenu,
@@ -620,7 +600,7 @@ fun DocumentScreen(
                                     showOverflowMenu = false
                                     showInfoDialog = true
                                 },
-                                leadingIcon = { Icon(Icons.Default.Info, contentDescription = null) }
+                                leadingIcon = { Icon(AppIcons.Info, contentDescription = null) }
                             )
                             if (currentMode == DocumentMode.EDIT) {
                                 DropdownMenuItem(
@@ -631,7 +611,7 @@ fun DocumentScreen(
                                         wordWrap = !wordWrap
                                         showOverflowMenu = false
                                     },
-                                    leadingIcon = { Icon(Icons.Default.WrapText, contentDescription = null) }
+                                    leadingIcon = { Icon(AppIcons.WrapText, contentDescription = null) }
                                 )
                                 DropdownMenuItem(
                                     text = {
@@ -641,7 +621,7 @@ fun DocumentScreen(
                                         showLineNumbers = !showLineNumbers
                                         showOverflowMenu = false
                                     },
-                                    leadingIcon = { Icon(Icons.Default.FormatListNumbered, contentDescription = null) }
+                                    leadingIcon = { Icon(AppIcons.FormatListNumbered, contentDescription = null) }
                                 )
                                 DropdownMenuItem(
                                     text = {
@@ -651,7 +631,7 @@ fun DocumentScreen(
                                         useMonospace = !useMonospace
                                         showOverflowMenu = false
                                     },
-                                    leadingIcon = { Icon(Icons.Default.Code, contentDescription = null) }
+                                    leadingIcon = { Icon(AppIcons.Code, contentDescription = null) }
                                 )
                             }
                             HorizontalDivider()
@@ -661,7 +641,7 @@ fun DocumentScreen(
                                     showOverflowMenu = false
                                     onShare()
                                 },
-                                leadingIcon = { Icon(Icons.Default.Share, contentDescription = null) }
+                                leadingIcon = { Icon(AppIcons.Share, contentDescription = null) }
                             )
                             DropdownMenuItem(
                                 text = { Text(stringResource(R.string.doc_open_external)) },
@@ -669,7 +649,7 @@ fun DocumentScreen(
                                     showOverflowMenu = false
                                     onOpenExternal()
                                 },
-                                leadingIcon = { Icon(Icons.AutoMirrored.Filled.OpenInNew, contentDescription = null) }
+                                leadingIcon = { Icon(AppIcons.OpenInNew, contentDescription = null) }
                             )
                         }
                     }
@@ -677,7 +657,6 @@ fun DocumentScreen(
             )
         },
         bottomBar = {
-            // Status bar
             if (!isLoading && errorMessage == null) {
                 Surface(
                     color = MaterialTheme.colorScheme.surfaceContainerLow,
@@ -711,7 +690,6 @@ fun DocumentScreen(
                 .fillMaxSize()
                 .padding(paddingValues)
         ) {
-            // In-Document Search Bar
             AnimatedVisibility(visible = isSearching) {
                 Surface(
                     color = MaterialTheme.colorScheme.surfaceContainerHigh,
@@ -774,7 +752,7 @@ fun DocumentScreen(
                                 enabled = searchMatches.isNotEmpty(),
                                 modifier = Modifier.size(32.dp)
                             ) {
-                                Icon(Icons.Default.KeyboardArrowUp, contentDescription = "Previous match")
+                                Icon(AppIcons.KeyboardArrowUp, contentDescription = "Previous match")
                             }
 
                             IconButton(
@@ -786,7 +764,7 @@ fun DocumentScreen(
                                 enabled = searchMatches.isNotEmpty(),
                                 modifier = Modifier.size(32.dp)
                             ) {
-                                Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Next match")
+                                Icon(AppIcons.KeyboardArrowDown, contentDescription = "Next match")
                             }
                         }
 
@@ -798,13 +776,12 @@ fun DocumentScreen(
                             },
                             modifier = Modifier.size(32.dp)
                         ) {
-                            Icon(Icons.Default.Close, contentDescription = stringResource(R.string.action_close))
+                            Icon(AppIcons.Close, contentDescription = stringResource(R.string.action_close))
                         }
                     }
                 }
             }
 
-            // Truncation / Large file warning banner
             if (isTruncated) {
                 Surface(
                     color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.7f),
@@ -815,7 +792,7 @@ fun DocumentScreen(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Icon(
-                            Icons.Default.Warning,
+                            AppIcons.Warning,
                             contentDescription = null,
                             tint = MaterialTheme.colorScheme.onErrorContainer,
                             modifier = Modifier.size(18.dp)
@@ -834,7 +811,6 @@ fun DocumentScreen(
                 }
             }
 
-            // Content Area
             Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
                 when {
                     isLoading -> {
@@ -861,7 +837,7 @@ fun DocumentScreen(
                             verticalArrangement = Arrangement.Center
                         ) {
                             Icon(
-                                Icons.Default.ErrorOutline,
+                                AppIcons.ErrorOutline,
                                 contentDescription = null,
                                 tint = MaterialTheme.colorScheme.error,
                                 modifier = Modifier.size(48.dp)
@@ -876,7 +852,6 @@ fun DocumentScreen(
                         }
                     }
                     isMarkdownFile && currentMode == DocumentMode.VIEW -> {
-                        // Markdown Reader Mode
                         val baseDir = (source as? DocumentSource.FileSource)?.file?.parentFile
                         val viewScrollState = rememberScrollState()
                         val activeMatchCharOffset = if (isSearching) searchMatches.getOrNull(currentMatchIndex) else null
@@ -902,7 +877,6 @@ fun DocumentScreen(
                         }
                     }
                     else -> {
-                        // Text Editor Mode
                         TextEditorContent(
                             content = content,
                             onContentChange = { if (!source.isReadOnly) content = it },
@@ -921,10 +895,6 @@ fun DocumentScreen(
     }
 }
 
-/**
- * Interactive vertical scroll thumb shown on the right side of long documents.
- * Allows quick position awareness, tap-to-scroll, and vertical drag-to-scroll.
- */
 @Composable
 fun VerticalFastScrollbar(
     scrollState: ScrollState,
@@ -1019,10 +989,6 @@ fun VerticalFastScrollbar(
     }
 }
 
-/**
- * VisualTransformation that highlights all search occurrences in the text,
- * with a distinct emphasis on the actively selected match index.
- */
 class SearchHighlightTransformation(
     private val searchQuery: String,
     private val activeMatchCharOffset: Int?,
@@ -1090,7 +1056,6 @@ private fun TextEditorContent(
         )
     }
 
-    // Keep textFieldValue in sync if external content changes
     LaunchedEffect(content) {
         if (textFieldValue.text != content) {
             textFieldValue = textFieldValue.copy(text = content)
@@ -1114,7 +1079,6 @@ private fun TextEditorContent(
         searchMatches.getOrNull(currentMatchIndex)
     }
 
-    // Visual transformation for search highlighting
     val highlightColor = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.85f)
     val activeHighlightColor = MaterialTheme.colorScheme.primary
     val onHighlightTextColor = MaterialTheme.colorScheme.onTertiaryContainer
@@ -1142,7 +1106,6 @@ private fun TextEditorContent(
         }
     }
 
-    // Auto-scroll to active search match
     LaunchedEffect(activeMatchCharOffset, textLayoutResult) {
         if (activeMatchCharOffset != null) {
             val layout = textLayoutResult
@@ -1176,9 +1139,6 @@ private fun TextEditorContent(
         }
     }
 
-    // BringIntoViewResponder: Intercepts and handles cursor/focus visibility requests.
-    // By returning a rect at current scroll offset from calculateRectForParent, we completely
-    // prevent Compose's verticalScroll from making unexpected whole-document jumps to line 0 on focus gain.
     val bringIntoViewResponder = remember(verticalScrollState) {
         object : BringIntoViewResponder {
             override fun calculateRectForParent(localRect: Rect): Rect {
@@ -1195,14 +1155,12 @@ private fun TextEditorContent(
                 }
                 if (viewportHeight <= 0f) return
 
-                // Suppress whole-component bring-into-view requests (triggered on FocusModifier gain)
                 if (rect.height > viewportHeight * 0.5f) {
                     return
                 }
 
                 val paddingTopPx = with(density) { 12.dp.toPx() }
 
-                // Suppress line-0 bring-into-view requests triggered on initial focus gain when scrolled down
                 if (rect.top <= paddingTopPx && verticalScrollState.value > 40) {
                     return
                 }
@@ -1233,7 +1191,6 @@ private fun TextEditorContent(
                 .fillMaxSize()
                 .background(MaterialTheme.colorScheme.surface)
         ) {
-            // Line numbers column
             if (showLineNumbers) {
                 Column(
                     modifier = Modifier
@@ -1252,7 +1209,6 @@ private fun TextEditorContent(
                         )
                     }
                 }
-                // Thin gutter divider
                 Box(
                     modifier = Modifier
                         .width(1.dp)
@@ -1261,7 +1217,6 @@ private fun TextEditorContent(
                 )
             }
 
-            // Editable text area
             Box(
                 modifier = Modifier
                     .weight(1f)
@@ -1333,7 +1288,6 @@ private fun TextEditorContent(
                             .bringIntoViewResponder(bringIntoViewResponder)
                     )
 
-                    // Blank space tap target below text to place cursor at the end
                     if (!isReadOnly) {
                         Spacer(
                             modifier = Modifier
@@ -1354,7 +1308,6 @@ private fun TextEditorContent(
             }
         }
 
-        // Fast scrollbar on right side
         VerticalFastScrollbar(
             scrollState = verticalScrollState,
             modifier = Modifier.align(Alignment.CenterEnd)

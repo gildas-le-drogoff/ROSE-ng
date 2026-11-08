@@ -2,7 +2,7 @@ package dev.narayan.rose.document
 
 import android.content.Context
 import android.net.Uri
-import dev.narayan.rose.rescanForMediaStore
+import dev.narayan.rose.data.rescanForMediaStore
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
@@ -17,7 +17,6 @@ import java.nio.file.StandardCopyOption
 
 object TextEncodingHelper {
 
-    // 5 MB limit for full in-memory interactive editing
     const val MAX_EDIT_BYTES = 5L * 1024L * 1024L
 
     data class LoadedText(
@@ -29,11 +28,6 @@ object TextEncodingHelper {
         val hasBom: Boolean = false
     )
 
-    /**
-     * Reads text safely from an InputStream, detecting BOM, Charset, and line endings.
-     * If the stream length exceeds [maxBytes], it safely reads up to [maxBytes] and marks
-     * [LoadedText.isTruncated] as true.
-     */
     fun readText(inputStream: InputStream, maxBytes: Long = MAX_EDIT_BYTES): LoadedText {
         val buffer = ByteArray(8192)
         val baos = ByteArrayOutputStream()
@@ -58,7 +52,6 @@ object TextEncodingHelper {
             totalRead += read
         }
 
-        // Also check if there were more bytes available in the stream
         if (!isTruncated && inputStream.read() != -1) {
             isTruncated = true
             totalRead++
@@ -78,7 +71,6 @@ object TextEncodingHelper {
             )
         }
 
-        // BOM Detection
         var offset = 0
         var detectedCharset: Charset? = null
         var hasBom = false
@@ -107,7 +99,6 @@ object TextEncodingHelper {
             hasBom = true
         }
 
-        // If no BOM, test strict UTF-8 decoding
         if (detectedCharset == null) {
             val byteBuffer = ByteBuffer.wrap(bytes)
             val decoder = StandardCharsets.UTF_8.newDecoder()
@@ -118,7 +109,6 @@ object TextEncodingHelper {
                 decoder.decode(byteBuffer)
                 StandardCharsets.UTF_8
             } catch (e: Exception) {
-                // Not strictly UTF-8, fall back safely to ISO-8859-1 (Latin-1) which preserves every byte 0..255
                 StandardCharsets.ISO_8859_1
             }
         }
@@ -137,9 +127,6 @@ object TextEncodingHelper {
         )
     }
 
-    /**
-     * Normalizes line endings to the given style.
-     */
     fun normalizeLineEndings(text: String, lineEnding: LineEnding): String {
         val standardLf = text.replace("\r\n", "\n").replace("\r", "\n")
         return if (lineEnding == LineEnding.LF) {
@@ -149,9 +136,6 @@ object TextEncodingHelper {
         }
     }
 
-    /**
-     * Atomically saves text to a File on disk with the given encoding and line endings.
-     */
     fun saveFile(
         context: Context,
         targetFile: File,
@@ -180,7 +164,6 @@ object TextEncodingHelper {
                 fos.channel.force(true)
             }
 
-            // Safe atomic replacement with rollback protection
             var backupFile: File? = null
             try {
                 var moved = false
@@ -237,7 +220,6 @@ object TextEncodingHelper {
                 runCatching { if (backupFile != null && backupFile.exists() && targetFile.exists()) backupFile.delete() }
             }
 
-            // Notify Android MediaStore of updated file size and timestamp
             rescanForMediaStore(context, targetFile)
 
             Result.success(Unit)
@@ -246,9 +228,6 @@ object TextEncodingHelper {
         }
     }
 
-    /**
-     * Safely saves text to a content/file Uri via ContentResolver.
-     */
     fun saveUri(
         context: Context,
         targetUri: Uri,
@@ -280,4 +259,3 @@ object TextEncodingHelper {
         }
     }
 }
-

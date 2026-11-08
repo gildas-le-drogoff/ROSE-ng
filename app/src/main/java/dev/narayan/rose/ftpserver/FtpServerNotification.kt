@@ -1,5 +1,7 @@
 package dev.narayan.rose.ftpserver
 
+import dev.narayan.rose.roseNGLog
+
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -13,7 +15,7 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import dev.narayan.rose.MainActivity
 import dev.narayan.rose.R
-import dev.narayan.rose.SettingsManager
+import dev.narayan.rose.data.settings.SettingsManager
 
 class FtpServerNotification(private val service: Service) {
     private val notificationManager =
@@ -59,7 +61,7 @@ class FtpServerNotification(private val service: Service) {
                 service.startForeground(NOTIFICATION_ID, notification)
             }
         } catch (e: Exception) {
-            e.printStackTrace()
+            roseNGLog.e("FtpServer", e) { "startForeground failed" }
             service.startForeground(NOTIFICATION_ID, notification)
         }
     }

@@ -25,18 +25,12 @@ import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.unit.dp
+import dev.chrisbanes.haze.HazeInput
 import dev.chrisbanes.haze.HazeState
-import dev.chrisbanes.haze.HazeStyle
-import dev.chrisbanes.haze.HazeTint
-import dev.chrisbanes.haze.hazeEffect
+import dev.chrisbanes.haze.blur.HazeBlurStyle
+import dev.chrisbanes.haze.blur.HazeColorEffect
+import dev.chrisbanes.haze.blur.hazeBlur
 
-/**
- * Renders a frosted/tinted glass background behind the system navigation bar,
- * ONLY when button-based navigation (e.g. 3-button or 2-button navigation) is active.
- *
- * In gesture navigation, this composable renders nothing, keeping the system bar
- * completely transparent for an immersive edge-to-edge experience.
- */
 @Composable
 fun BoxScope.TintedGlassNavigationBar(
     hazeState: HazeState,
@@ -67,10 +61,6 @@ fun BoxScope.TintedGlassNavigationBar(
         }
     }
 
-    // Determine if navigation is button-based.
-    // In Android:
-    // - With gesture navigation, tappableElement insets are 0.dp and navigationBars is thin (<= 24.dp).
-    // - With 3-button navigation, tappableElement insets match navigationBars (typically 48.dp, >= 40.dp) or navigation_mode == 0.
     val isButtonBottom = navBarBottom > 0.dp && (tappableBottom > 0.dp || navBarBottom > 32.dp || isButtonNavSetting)
     val isButtonEnd = navBarEnd > 0.dp && (tappableEnd > 0.dp || navBarEnd > 32.dp || isButtonNavSetting)
     val isButtonStart = navBarStart > 0.dp && (tappableStart > 0.dp || navBarStart > 32.dp || isButtonNavSetting)
@@ -85,12 +75,15 @@ fun BoxScope.TintedGlassNavigationBar(
         backgroundColor.copy(alpha = 0.70f)
     }
 
-    val hazeStyle = HazeStyle(
-        backgroundColor = backgroundColor,
-        tint = HazeTint(glassTint),
-        blurRadius = 24.dp,
-        noiseFactor = 0.04f
-    )
+    val hazeStyle = remember(backgroundColor, glassTint) {
+        HazeBlurStyle {
+            backgroundColor(backgroundColor)
+            colorEffects(listOf(HazeColorEffect.tint(glassTint)))
+            blurRadius(24.dp)
+            noiseFactor(0.04f)
+        }
+    }
+    val hazeInput = remember(hazeState) { HazeInput.Sources(hazeState) }
 
     val outlineColor = MaterialTheme.colorScheme.outlineVariant
 
@@ -100,12 +93,11 @@ fun BoxScope.TintedGlassNavigationBar(
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
                 .height(navBarBottom)
-                .hazeEffect(
-                    state = hazeState,
+                .hazeBlur(
+                    input = hazeInput,
                     style = hazeStyle
                 )
         ) {
-            // Subtle frosted glass top border / specular highlight line
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -127,8 +119,8 @@ fun BoxScope.TintedGlassNavigationBar(
                 .align(Alignment.CenterEnd)
                 .fillMaxHeight()
                 .width(navBarEnd)
-                .hazeEffect(
-                    state = hazeState,
+                .hazeBlur(
+                    input = hazeInput,
                     style = hazeStyle
                 )
         ) {
@@ -153,8 +145,8 @@ fun BoxScope.TintedGlassNavigationBar(
                 .align(Alignment.CenterStart)
                 .fillMaxHeight()
                 .width(navBarStart)
-                .hazeEffect(
-                    state = hazeState,
+                .hazeBlur(
+                    input = hazeInput,
                     style = hazeStyle
                 )
         ) {

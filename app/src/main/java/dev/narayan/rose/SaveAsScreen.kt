@@ -1,6 +1,7 @@
 package dev.narayan.rose
 
 import android.net.Uri
+import dev.narayan.rose.ui.icons.AppIcons
 import android.os.Environment
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.*
@@ -10,9 +11,6 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -31,6 +29,8 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import dev.narayan.rose.domain.model.FileItem
+import dev.narayan.rose.ui.explorer.*
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -48,7 +48,6 @@ fun SaveAsScreen(
     val scope = rememberCoroutineScope()
     var showCreateFolderDialog by remember { mutableStateOf(false) }
     
-    // Initial state: show options menu if it's a single ZIP file
     var showOptions by remember { mutableStateOf(isZip && uris.size == 1) }
 
     fun createNewFolder(name: String) {
@@ -115,7 +114,7 @@ fun SaveAsScreen(
     }
 
     BackHandler {
-        val isDeviceRoot = viewModel.storageDevices.any { it.path == currentDir.absolutePath } || currentDir == rootDir
+        val isDeviceRoot = viewModel.storage.storageDevices.any { it.path == currentDir.absolutePath } || currentDir == rootDir
         if (showOptions) {
             onDismiss()
         } else if (!isDeviceRoot && currentDir.parentFile != null && currentDir.parentFile?.absolutePath != "/storage") {
@@ -141,20 +140,20 @@ fun SaveAsScreen(
                         },
                         navigationIcon = {
                             IconButton(onClick = onDismiss) {
-                                Icon(Icons.Default.Close, contentDescription = stringResource(R.string.action_cancel))
+                                Icon(AppIcons.Close, contentDescription = stringResource(R.string.action_cancel))
                             }
                         },
                         actions = {
                             if (!showOptions) {
                                 IconButton(onClick = { showCreateFolderDialog = true }) {
-                                    Icon(Icons.Default.CreateNewFolder, contentDescription = stringResource(R.string.create_folder_dialog_title))
+                                    Icon(AppIcons.CreateNewFolder, contentDescription = stringResource(R.string.create_folder_dialog_title))
                                 }
                             }
                         }
                     )
                     Breadcrumbs(
                         path = currentDir.absolutePath,
-                        storageDevices = viewModel.storageDevices,
+                        storageDevices = viewModel.storage.storageDevices,
                         onNavigate = { currentDir = it }
                     )
                 }
@@ -173,7 +172,7 @@ fun SaveAsScreen(
                             }
                         }
                     },
-                    icon = { Icon(Icons.Default.Save, contentDescription = null) },
+                    icon = { Icon(AppIcons.Save, contentDescription = null) },
                     text = { Text(stringResource(R.string.save_as_save_here), fontWeight = FontWeight.Bold) },
                     containerColor = MaterialTheme.colorScheme.primaryContainer,
                     contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
@@ -184,7 +183,6 @@ fun SaveAsScreen(
         }
     ) { padding ->
         Box(modifier = Modifier.padding(padding).fillMaxSize()) {
-            // Folder List for Navigation
             Column(modifier = Modifier.fillMaxSize()) {
                 if (items.isEmpty()) {
                     Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
@@ -224,7 +222,6 @@ fun SaveAsScreen(
                 }
             }
 
-            // Choice Menu Overlay
             AnimatedVisibility(
                 visible = showOptions,
                 enter = fadeIn() + slideInVertically(initialOffsetY = { it }),
@@ -251,7 +248,6 @@ fun SaveAsScreen(
                                 .fillMaxWidth(),
                             horizontalAlignment = Alignment.CenterHorizontally
                         ) {
-                            // Handle
                             Box(
                                 modifier = Modifier
                                     .width(36.dp)
@@ -263,7 +259,7 @@ fun SaveAsScreen(
 
                             SaveAsOption(
                                 modifier = Modifier.fillMaxWidth(),
-                                icon = Icons.Default.Search,
+                                icon = AppIcons.Search,
                                 title = stringResource(R.string.save_as_archive_viewer),
                                 subtitle = stringResource(R.string.save_as_archive_viewer_subtitle),
                                 onClick = { onArchiveView(uris[0]) }
@@ -277,7 +273,7 @@ fun SaveAsScreen(
 
                             SaveAsOption(
                                 modifier = Modifier.fillMaxWidth(),
-                                icon = Icons.Default.FileDownload,
+                                icon = AppIcons.Download,
                                 title = stringResource(R.string.save_as_save_as),
                                 subtitle = stringResource(R.string.save_as_save_as_subtitle),
                                 onClick = { showOptions = false }
@@ -311,7 +307,7 @@ private fun SaveAsOption(
         ) {
             Box(contentAlignment = Alignment.Center) {
                 Icon(
-                    Icons.Default.Folder,
+                    AppIcons.Folder,
                     contentDescription = null,
                     tint = Color(0xFF4C8DFF).copy(alpha = 0.3f),
                     modifier = Modifier.size(32.dp)
@@ -341,7 +337,7 @@ private fun SaveAsOption(
             }
         }
         Icon(
-            Icons.Default.ChevronRight,
+            AppIcons.ChevronRight,
             contentDescription = null,
             tint = Color.Gray.copy(alpha = 0.4f),
             modifier = Modifier.size(20.dp)

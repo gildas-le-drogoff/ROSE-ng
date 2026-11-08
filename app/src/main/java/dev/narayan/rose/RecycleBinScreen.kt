@@ -1,6 +1,7 @@
 package dev.narayan.rose
 
 import androidx.activity.compose.BackHandler
+import dev.narayan.rose.ui.icons.AppIcons
 import androidx.compose.animation.*
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.LinearOutSlowInEasing
@@ -13,9 +14,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -30,6 +28,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import java.io.File
 import java.util.*
+import dev.narayan.rose.domain.model.FileItem
+import dev.narayan.rose.ui.explorer.*
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -39,24 +39,19 @@ fun RecycleBinScreen(
     listState: androidx.compose.foundation.lazy.LazyListState = androidx.compose.foundation.lazy.rememberLazyListState()
 ) {
     val context = LocalContext.current
-    val rawItems = viewModel.recycleBinItems
+    val rawItems = viewModel.recycleBin.recycleBinItems
 
     LaunchedEffect(Unit) {
-        viewModel.loadRecycleBin()
+        viewModel.recycleBin.loadRecycleBin()
     }
 
-    // Material Files style: periodic poll for "live" updates (size changes, etc.)
-    // while the user is looking at the screen.
     LaunchedEffect(Unit) {
         while (true) {
             kotlinx.coroutines.delay(2000)
-            viewModel.loadRecycleBin()
+            viewModel.recycleBin.loadRecycleBin()
         }
     }
 
-    // Save scroll position - only when items are actually present and user has scrolled.
-    // Hoisting listState in MainActivity already preserves the position during
-    // normal navigation; this sync with VM is for even deeper persistence.
     LaunchedEffect(listState) {
         snapshotFlow {
             if (listState.layoutInfo.visibleItemsInfo.isNotEmpty()) {
@@ -64,24 +59,19 @@ fun RecycleBinScreen(
             } else null
         }.collect { pos ->
             if (pos != null) {
-                viewModel.recycleBinScrollIndex = pos.first
-                viewModel.recycleBinScrollOffset = pos.second
+                viewModel.recycleBin.recycleBinScrollIndex = pos.first
+                viewModel.recycleBin.recycleBinScrollOffset = pos.second
             }
         }
     }
 
-    // Restore scroll on mount ONLY if the listState was actually reset to (0,0)
-    // (e.g. by Activity recreation or navigation disposal) and we have a
-    // non-zero saved position.
     LaunchedEffect(Unit) {
-        if (viewModel.recycleBinScrollIndex != 0 || viewModel.recycleBinScrollOffset != 0) {
+        if (viewModel.recycleBin.recycleBinScrollIndex != 0 || viewModel.recycleBin.recycleBinScrollOffset != 0) {
             val listStateWasReset = listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset == 0
             if (listStateWasReset) {
-                // Material Files style: wait for the list to have enough items to
-                // actually reach the saved index before scrolling.
                 snapshotFlow { listState.layoutInfo.totalItemsCount }.collect { count ->
-                    if (count > viewModel.recycleBinScrollIndex) {
-                        listState.scrollToItem(viewModel.recycleBinScrollIndex, viewModel.recycleBinScrollOffset)
+                    if (count > viewModel.recycleBin.recycleBinScrollIndex) {
+                        listState.scrollToItem(viewModel.recycleBin.recycleBinScrollIndex, viewModel.recycleBin.recycleBinScrollOffset)
                         throw kotlinx.coroutines.CancellationException()
                     }
                 }
@@ -106,8 +96,6 @@ fun RecycleBinScreen(
     val selectedItems = remember(selectedIds, items) { items.filter { it.id in selectedIds }.toSet() }
     var isSelectionMode by remember { mutableStateOf(false) }
 
-    // Material Files style: track the top item and list size to detect when
-    // a change should or should NOT trigger a scroll-to-top.
     var lastTopKey by remember { mutableStateOf<String?>(null) }
     var lastListSize by remember { mutableStateOf(0) }
 
@@ -119,9 +107,6 @@ fun RecycleBinScreen(
         lastTopKey = newTopKey
         lastListSize = newSize
 
-        // A delete shrinks the list. If we detect the list shrunk, we skip any
-        // automatic scroll-to-top logic that might be triggered by the key change.
-        // This is what allows the slide-up animation to play out in-place.
         if (previousTopKey != null && newTopKey != null && newTopKey != previousTopKey &&
             newSize > previousSize && listState.firstVisibleItemIndex == 0
         ) {
@@ -129,7 +114,6 @@ fun RecycleBinScreen(
         }
     }
 
-    // Material Files-style entrance animation keys (fade + slide up)
     val animatedItemKeys = remember(sortBy, sortOrder) { androidx.compose.runtime.mutableStateSetOf<String>() }
 
     var showDeleteConfirm by remember { mutableStateOf<RecycledItem?>(null) }
@@ -168,7 +152,7 @@ fun RecycleBinScreen(
                     },
                     navigationIcon = {
                         IconButton(onClick = { exitSelection() }) {
-                            Icon(Icons.Default.Close, contentDescription = stringResource(R.string.action_cancel))
+                            Icon(AppIcons.Close, contentDescription = stringResource(R.string.action_cancel))
                         }
                     },
                     actions = {
@@ -176,7 +160,7 @@ fun RecycleBinScreen(
                             if (selectedIds.size == items.size) selectedIds = emptySet()
                             else selectedIds = items.map { it.id }.toSet()
                         }) {
-                            Icon(Icons.Default.SelectAll, contentDescription = stringResource(R.string.action_select_all))
+                            Icon(AppIcons.SelectAll, contentDescription = stringResource(R.string.action_select_all))
                         }
                     }
                 )
@@ -194,13 +178,13 @@ fun RecycleBinScreen(
                     },
                     navigationIcon = {
                         IconButton(onClick = onBack) {
-                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.content_desc_back))
+                            Icon(AppIcons.ArrowBack, contentDescription = stringResource(R.string.content_desc_back))
                         }
                     },
                     actions = {
                         Box {
                             IconButton(onClick = { showSortMenu = true }) {
-                                Icon(Icons.Default.Sort, contentDescription = stringResource(R.string.sort_title))
+                                Icon(AppIcons.Sort, contentDescription = stringResource(R.string.sort_title))
                             }
                             DropdownMenu(
                                 expanded = showSortMenu,
@@ -225,7 +209,7 @@ fun RecycleBinScreen(
                         }
                         if (items.isNotEmpty()) {
                             IconButton(onClick = { showEmptyConfirm = true }) {
-                                Icon(Icons.Default.DeleteSweep, contentDescription = stringResource(R.string.action_empty), tint = MaterialTheme.colorScheme.error)
+                                Icon(AppIcons.DeleteSweep, contentDescription = stringResource(R.string.action_empty), tint = MaterialTheme.colorScheme.error)
                             }
                         }
                     }
@@ -243,13 +227,13 @@ fun RecycleBinScreen(
                         Button(
                             onClick = {
                                 val toRestore = selectedItems
-                                viewModel.restoreRecycleBinItems(context, toRestore)
+                                viewModel.recycleBin.restoreRecycleBinItems(context, toRestore)
                                 exitSelection()
                             },
                             modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
                             shape = RoundedCornerShape(12.dp)
                         ) {
-                            Icon(Icons.Default.Restore, null)
+                            Icon(AppIcons.Restore, null)
                             Spacer(Modifier.width(8.dp))
                             Text(stringResource(R.string.action_restore))
                         }
@@ -259,7 +243,7 @@ fun RecycleBinScreen(
                             colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
                             shape = RoundedCornerShape(12.dp)
                         ) {
-                            Icon(Icons.Default.DeleteForever, null)
+                            Icon(AppIcons.DeleteForever, null)
                             Spacer(Modifier.width(8.dp))
                             Text(stringResource(R.string.action_delete))
                         }
@@ -277,7 +261,7 @@ fun RecycleBinScreen(
             ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Icon(
-                        Icons.Default.DeleteOutline,
+                        AppIcons.DeleteOutline,
                         contentDescription = null,
                         modifier = Modifier.size(64.dp),
                         tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
@@ -313,7 +297,7 @@ fun RecycleBinScreen(
                         isSelected = isSelected,
                         isSelectionMode = isSelectionMode,
                         onRestore = {
-                            viewModel.restoreRecycleBinItems(context, setOf(item))
+                            viewModel.recycleBin.restoreRecycleBinItems(context, setOf(item))
                         },
                         onDeletePermanently = { showDeleteConfirm = item },
                         onProperties = { propertyItem = item },
@@ -328,7 +312,6 @@ fun RecycleBinScreen(
                                 if (item.isDirectory || isArchive) {
                                     showRestoreToViewPrompt = item
                                 } else {
-                                    // Try to play/open
                                     (context as? MainActivity)?.let { activity ->
                                         activity.openRecycledFile(item)
                                     }
@@ -358,7 +341,7 @@ fun RecycleBinScreen(
             onDismissRequest = { propertyItem = null },
             title = {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.Info, null, tint = MaterialTheme.colorScheme.primary)
+                    Icon(AppIcons.Info, null, tint = MaterialTheme.colorScheme.primary)
                     Spacer(Modifier.width(12.dp))
                     Text(stringResource(R.string.action_properties))
                 }
@@ -393,7 +376,7 @@ fun RecycleBinScreen(
                     contentAlignment = Alignment.Center
                 ) {
                     Icon(
-                        imageVector = Icons.Default.DeleteForever,
+                        imageVector = AppIcons.DeleteForever,
                         contentDescription = null,
                         tint = MaterialTheme.colorScheme.error,
                         modifier = Modifier.size(28.dp)
@@ -450,14 +433,14 @@ fun RecycleBinScreen(
             confirmButton = {
                 Button(
                     onClick = {
-                        viewModel.deleteRecycleBinItemPermanently(item)
+                        viewModel.recycleBin.deleteRecycleBinItemPermanently(item)
                         showDeleteConfirm = null
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
                     shape = RoundedCornerShape(14.dp),
                     contentPadding = PaddingValues(horizontal = 20.dp, vertical = 10.dp)
                 ) {
-                    Icon(Icons.Default.DeleteForever, null, modifier = Modifier.size(18.dp))
+                    Icon(AppIcons.DeleteForever, null, modifier = Modifier.size(18.dp))
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(stringResource(R.string.action_delete), fontWeight = FontWeight.SemiBold)
                 }
@@ -490,7 +473,7 @@ fun RecycleBinScreen(
                     contentAlignment = Alignment.Center
                 ) {
                     Icon(
-                        imageVector = Icons.Default.DeleteSweep,
+                        imageVector = AppIcons.DeleteSweep,
                         contentDescription = null,
                         tint = MaterialTheme.colorScheme.error,
                         modifier = Modifier.size(28.dp)
@@ -518,14 +501,14 @@ fun RecycleBinScreen(
             confirmButton = {
                 Button(
                     onClick = {
-                        viewModel.emptyRecycleBinPermanently()
+                        viewModel.recycleBin.emptyRecycleBinPermanently()
                         showEmptyConfirm = false
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
                     shape = RoundedCornerShape(14.dp),
                     contentPadding = PaddingValues(horizontal = 20.dp, vertical = 10.dp)
                 ) {
-                    Icon(Icons.Default.DeleteSweep, null, modifier = Modifier.size(18.dp))
+                    Icon(AppIcons.DeleteSweep, null, modifier = Modifier.size(18.dp))
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(stringResource(R.string.action_empty), fontWeight = FontWeight.SemiBold)
                 }
@@ -558,7 +541,7 @@ fun RecycleBinScreen(
                     contentAlignment = Alignment.Center
                 ) {
                     Icon(
-                        imageVector = Icons.Default.DeleteForever,
+                        imageVector = AppIcons.DeleteForever,
                         contentDescription = null,
                         tint = MaterialTheme.colorScheme.error,
                         modifier = Modifier.size(28.dp)
@@ -591,7 +574,7 @@ fun RecycleBinScreen(
             confirmButton = {
                 Button(
                     onClick = {
-                        viewModel.deleteRecycleBinItemsPermanently(selectedItems)
+                        viewModel.recycleBin.deleteRecycleBinItemsPermanently(selectedItems)
                         exitSelection()
                         showBulkDeleteConfirm = false
                     },
@@ -599,7 +582,7 @@ fun RecycleBinScreen(
                     shape = RoundedCornerShape(14.dp),
                     contentPadding = PaddingValues(horizontal = 20.dp, vertical = 10.dp)
                 ) {
-                    Icon(Icons.Default.DeleteForever, null, modifier = Modifier.size(18.dp))
+                    Icon(AppIcons.DeleteForever, null, modifier = Modifier.size(18.dp))
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(stringResource(R.string.action_delete), fontWeight = FontWeight.SemiBold)
                 }
@@ -619,7 +602,7 @@ fun RecycleBinScreen(
     showRestoreToViewPrompt?.let { item ->
         AlertDialog(
             onDismissRequest = { showRestoreToViewPrompt = null },
-            icon = { Icon(Icons.Default.Restore, null) },
+            icon = { Icon(AppIcons.Restore, null) },
             title = { Text(if (item.isDirectory) stringResource(R.string.restore_folder_prompt_title) else stringResource(R.string.restore_archive_prompt_title)) },
             text = {
                 Text(stringResource(R.string.restore_to_view_message, item.originalName))
@@ -627,7 +610,7 @@ fun RecycleBinScreen(
             confirmButton = {
                 Button(
                     onClick = {
-                        viewModel.restoreRecycleBinItems(context, setOf(item))
+                        viewModel.recycleBin.restoreRecycleBinItems(context, setOf(item))
                         showRestoreToViewPrompt = null
                     }
                 ) {
@@ -658,7 +641,7 @@ fun RecycledSortItem(
         trailingIcon = {
             if (currentSort == sortBy) {
                 Icon(
-                    if (currentOrder == RoseViewModel.SortOrder.ASCENDING) Icons.Default.ArrowUpward else Icons.Default.ArrowDownward,
+                    if (currentOrder == RoseViewModel.SortOrder.ASCENDING) AppIcons.ArrowUpward else AppIcons.ArrowDownward,
                     null,
                     modifier = Modifier.size(16.dp)
                 )
@@ -683,7 +666,6 @@ internal fun RecycledItemView(
     hasAnimatedBefore: Boolean = true,
     onAnimationStart: () -> Unit = {}
 ) {
-    // Material Files-style staggered entrance animation
     val animatedProgress = remember(item.id) {
         Animatable(if (hasAnimatedBefore) 1f else 0f)
     }
@@ -778,7 +760,7 @@ internal fun RecycledItemView(
             if (!isSelectionMode) {
                 Box {
                     IconButton(onClick = { showMenu = true }) {
-                        Icon(Icons.Default.MoreVert, null)
+                        Icon(AppIcons.MoreVert, null)
                     }
                     DropdownMenu(
                         expanded = showMenu,
@@ -787,17 +769,17 @@ internal fun RecycledItemView(
                         DropdownMenuItem(
                             text = { Text(stringResource(R.string.action_restore)) },
                             onClick = { showMenu = false; onRestore() },
-                            leadingIcon = { Icon(Icons.Default.Restore, null) }
+                            leadingIcon = { Icon(AppIcons.Restore, null) }
                         )
                         DropdownMenuItem(
                             text = { Text(stringResource(R.string.delete_permanently_title)) },
                             onClick = { showMenu = false; onDeletePermanently() },
-                            leadingIcon = { Icon(Icons.Default.DeleteForever, null, tint = MaterialTheme.colorScheme.error) }
+                            leadingIcon = { Icon(AppIcons.DeleteForever, null, tint = MaterialTheme.colorScheme.error) }
                         )
                         DropdownMenuItem(
                             text = { Text(stringResource(R.string.action_properties)) },
                             onClick = { showMenu = false; onProperties() },
-                            leadingIcon = { Icon(Icons.Default.Info, null) }
+                            leadingIcon = { Icon(AppIcons.Info, null) }
                         )
                     }
                 }

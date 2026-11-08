@@ -6,7 +6,6 @@ plugins {
     alias(libs.plugins.kotlin.compose)
 }
 
-// Load signing credentials safely from local keystore.properties
 val keystorePropertiesFile = rootProject.file("keystore.properties")
 val keystoreProperties = Properties().apply {
     if (keystorePropertiesFile.exists()) {
@@ -16,14 +15,17 @@ val keystoreProperties = Properties().apply {
 
 android {
     namespace = "dev.narayan.rose"
-    compileSdk = 36
-
+    compileSdk {
+        version = release(37) {
+            minorApiLevel = 2
+        }
+    }
     defaultConfig {
         applicationId = "dev.narayan.rose"
         minSdk = 24
-        targetSdk = 36
-        versionCode = 21
-        versionName = "2.1"
+        targetSdk = 37
+        versionCode = 22
+        versionName = "2.2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -32,7 +34,7 @@ android {
         abi {
             isEnable = true
             reset()
-            include("arm64-v8a", "armeabi-v7a", "x86_64")
+            include("arm64-v8a", "x86_64")
             isUniversalApk = true
         }
     }
@@ -48,38 +50,31 @@ android {
         }
     }
 
-    signingConfigs {
-        create("release") {
-            val keyFile = rootProject.file("app/release-key.jks")
-
-            // Check if both the keystore file and property file exist locally
-            if (keyFile.exists() && keystorePropertiesFile.exists()) {
-                storeFile = keyFile
+       signingConfigs {
+        val storeFilePath = keystoreProperties.getProperty("storeFile")
+            ?.removePrefix("../")
+            ?.takeIf { it.isNotBlank() }
+        val releaseStoreFile = storeFilePath?.let { rootProject.file(it) }?.takeIf { it.isFile }
+        if (keystoreProperties.isNotEmpty() && releaseStoreFile == null) {
+            logger.warn("keystore.properties: storeFile '$storeFilePath' missing or invalid, release will be unsigned")
+        }
+        if (releaseStoreFile != null) {
+            create("release") {
+                storeFile = releaseStoreFile
                 storePassword = keystoreProperties.getProperty("storePassword")
                 keyAlias = keystoreProperties.getProperty("keyAlias")
                 keyPassword = keystoreProperties.getProperty("keyPassword")
-            } else {
-                // Fallback for CI/GitHub Actions or open-source contributors
-                initWith(getByName("debug"))
             }
         }
     }
-
     buildTypes {
-        release {
-            signingConfig = signingConfigs.getByName("release")
-
-            // Enables R8 code shrinking, obfuscation, and optimization
+         release {
             isMinifyEnabled = true
-
-            // Enables resource shrinking (removes unused drawables, layouts, strings)
             isShrinkResources = true
-
-            // Applies default Android optimization rules
-            proguardFiles(
-                getDefaultProguardFile("proguard-android-optimize.txt"),
-                "proguard-rules.pro"
-            )
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            signingConfig = signingConfigs.findByName("release")
+            //noinspection ChromeOsAbiSupport
+            ndk { abiFilters += listOf("arm64-v8a") }
         }
         debug {
             // Uses standard debug signing for local debug builds
@@ -89,8 +84,8 @@ android {
 
     compileOptions {
         isCoreLibraryDesugaringEnabled = true
-        sourceCompatibility = JavaVersion.VERSION_11
-        targetCompatibility = JavaVersion.VERSION_11
+        sourceCompatibility = JavaVersion.VERSION_25
+        targetCompatibility = JavaVersion.VERSION_25
     }
 
     buildFeatures {
@@ -98,6 +93,17 @@ android {
         buildConfig = true
         aidl = true
     }
+
+    testOptions {
+        unitTests.isReturnDefaultValues = true
+    }
+    dependenciesInfo {
+        // Disables dependency metadata when building APKs (for F-Droid reproducibility)
+        includeInApk = false
+        // Disables dependency metadata when building Android App Bundles (for Google Play)
+        includeInBundle = false
+    }
+
 }
 
 dependencies {
@@ -107,7 +113,7 @@ dependencies {
     implementation(libs.libarchive)
     implementation(libs.shizuku.api)
     implementation(libs.shizuku.provider)
-    implementation("com.github.topjohnwu.libsu:core:5.2.2")
+    implementation(libs.core)
     coreLibraryDesugaring(libs.desugar.jdk.libs)
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.activity.compose)
@@ -115,7 +121,6 @@ dependencies {
     implementation(libs.androidx.compose.ui)
     implementation(libs.androidx.compose.ui.graphics)
     implementation(libs.androidx.compose.ui.tooling.preview)
-    implementation(libs.androidx.compose.material.icons.extended)
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.androidx.navigation.compose)
     implementation(libs.androidx.core.ktx)
@@ -131,7 +136,8 @@ dependencies {
     implementation(libs.ftpserver.core)
     implementation(libs.mina.core)
     implementation(libs.slf4j.android)
-    implementation("dev.chrisbanes.haze:haze:1.3.1")
+    implementation(libs.haze)
+    implementation(libs.haze.blur)
     testImplementation(libs.junit)
     androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)
@@ -141,7 +147,7 @@ dependencies {
     debugImplementation(libs.androidx.compose.ui.tooling)
 }
 
-val abiCodes = mapOf("armeabi-v7a" to 1, "arm64-v8a" to 2, "x86_64" to 3)
+val abiCodes = mapOf("arm64-v8a" to 1, "x86_64" to 2)
 
 androidComponents {
     onVariants { variant ->

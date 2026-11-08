@@ -11,11 +11,10 @@ import androidx.documentfile.provider.DocumentFile
 import java.io.File
 import java.io.InputStream
 import java.io.OutputStream
+import dev.narayan.rose.domain.model.FileItem
+import dev.narayan.rose.domain.model.matchesCategory
+import dev.narayan.rose.domain.model.FileType
 
-/**
- * Handles access to `Android/data` and `Android/obb` without root/Shizuku,
- * and generalized access to other SAF Tree URIs (like Google Drive or SD Cards).
- */
 object SafManager {
 
     private const val AUTHORITY = "com.android.externalstorage.documents"
@@ -24,10 +23,8 @@ object SafManager {
     private const val DOC_ID_ANDROID_DATA = "primary:Android/data"
     private const val DOC_ID_ANDROID_OBB = "primary:Android/obb"
 
-    /** Tree Uri for the whole "This device" storage root - the single permission we request. */
     private val ROOT_TREE_URI: Uri = DocumentsContract.buildTreeDocumentUri(AUTHORITY, DOC_ID_ROOT)
 
-    /** Document Uri (not tree) for the root - used only as the picker's starting location. */
     private val ROOT_DOCUMENT_URI: Uri = DocumentsContract.buildDocumentUri(AUTHORITY, DOC_ID_ROOT)
 
     fun isSafUri(path: String): Boolean {
@@ -73,25 +70,16 @@ object SafManager {
                         authority != "com.android.providers.downloads.documents")
     }
 
-
-    // ---------------------------------------------------------------------
-    // Path classification
-    // ---------------------------------------------------------------------
-
     private fun primaryStorage(): String = android.os.Environment.getExternalStorageDirectory().absolutePath
 
-    /** True if [path] is inside Android/data or Android/obb on any storage volume. */
     fun isRestrictedPath(path: String): Boolean {
         if (isSafUri(path)) return true
         val lowPath = try { File(path).canonicalPath.lowercase() } catch (e: Exception) { path.lowercase() }
 
-        // The app's own internal/external files directory (inside Android/data/dev.narayan.rose)
-        // is never restricted to our own process!
         if (lowPath.contains("/android/data/dev.narayan.rose") || lowPath.contains("/android/obb/dev.narayan.rose")) {
             return false
         }
 
-        // Check for Android/data or Android/obb at the end of path or as a directory segment
         return lowPath.endsWith("/android/data") || lowPath.contains("/android/data/") ||
                 lowPath.endsWith("/android/obb") || lowPath.contains("/android/obb/")
     }
@@ -140,7 +128,6 @@ object SafManager {
         }
     }
 
-    /** Splits a restricted [path] into (documentId of Android/data or Android/obb, relative path beyond it). */
     private fun splitAndroidSubRoot(path: String): Pair<String, String>? {
         val norm = normalizePath(path)
         val primary = primaryStorage()
@@ -165,10 +152,6 @@ object SafManager {
         return fullDocId.startsWith("$treeId/")
     }
 
-    // ---------------------------------------------------------------------
-    // Permission - ONE root grant covers both Android/data and Android/obb
-    // ---------------------------------------------------------------------
-
     private fun persistedRootTreeUri(context: Context): Uri? {
         val rootUriString = ROOT_TREE_URI.toString()
         return context.contentResolver.persistedUriPermissions
@@ -184,14 +167,12 @@ object SafManager {
         if (!isRestrictedPath(path)) return true
         if (hasRootPermission(context)) return true
         
-        // Check if we have a persisted permission for this specific folder or a parent
         val docId = documentIdForPath(path) ?: return false
         return context.contentResolver.persistedUriPermissions.any { 
             it.isReadPermission && it.uri.toString().contains(docId.replace(":", "%3A"))
         }
     }
 
-    /** One-time root grant request - points the system picker straight at the storage root. */
     fun requestRootPermission(): Intent {
         return Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
             flags = Intent.FLAG_GRANT_READ_URI_PERMISSION or
@@ -203,12 +184,10 @@ object SafManager {
         }
     }
 
-    /** Kept for call-site compatibility - path is only used to confirm it's actually restricted. */
     fun requestPermission(context: Context, path: String): Intent? {
         if (isSafUri(path)) return null
         if (!isRestrictedPath(path)) return null
         
-        // Targeted permission request for specific subfolder (like CX/NFile)
         val docId = documentIdForPath(path) ?: return requestRootPermission()
         val initialUri = DocumentsContract.buildDocumentUri(AUTHORITY, docId)
         
@@ -221,10 +200,6 @@ object SafManager {
             putExtra("android.provider.extra.SHOW_ADVANCED", true)
         }
     }
-
-    // ---------------------------------------------------------------------
-    // DocumentFile resolution (core of every operation below)
-    // ---------------------------------------------------------------------
 
     fun getDocumentFile(context: Context, path: String): DocumentFile? {
         if (isSafUri(path)) {
@@ -247,7 +222,6 @@ object SafManager {
         val (rootDocId, relativePath) = splitAndroidSubRoot(path) ?: return null
         val fullDocId = if (relativePath.isEmpty()) rootDocId else "$rootDocId/$relativePath"
         
-        // Try to find a persisted URI that can reach this path
         val treeUri = context.contentResolver.persistedUriPermissions
             .filter { it.isReadPermission }
             .map { it.uri }
@@ -261,7 +235,6 @@ object SafManager {
         )
         
         if (doc == null || !doc.exists()) {
-            // Fallback: start from tree root and walk down
             val treeId = DocumentsContract.getTreeDocumentId(treeUri)
             doc = DocumentFile.fromSingleUri(context, DocumentsContract.buildDocumentUriUsingTree(treeUri, treeId))
             if (doc == null) return null
@@ -319,7 +292,6 @@ object SafManager {
         return getDocumentFile(context, path)?.isDirectory == true
     }
 
-    /** Content Uri for a path, suitable for ACTION_VIEW / ACTION_SEND with FLAG_GRANT_READ_URI_PERMISSION. */
     fun getContentUri(context: Context, path: String): Uri? {
         if (isSafUri(path)) {
             return Uri.parse(normalizeSafPath(path))
@@ -337,10 +309,6 @@ object SafManager {
             } ?: return null
         return DocumentsContract.buildDocumentUriUsingTree(treeUri, fullDocId)
     }
-
-    // ---------------------------------------------------------------------
-    // Listing
-    // ---------------------------------------------------------------------
 
     fun listFiles(context: Context, path: String): List<FileItem> {
         if (isSafUri(path)) {
@@ -392,7 +360,6 @@ object SafManager {
             }
             results
         } catch (e: Exception) {
-            // Fallback to DocumentFile traversal if the direct cursor query fails
             try {
                 val document = getDocumentFile(context, path) ?: return emptyList()
                 document.listFiles().map { doc ->
@@ -451,7 +418,6 @@ object SafManager {
                         val isDir = mime == DocumentsContract.Document.MIME_TYPE_DIR
                         val id = if (idIdx >= 0 && !c.isNull(idIdx)) c.getString(idIdx) else null ?: continue
 
-                        // Always build using the treeUri to maintain access permissions
                         val childUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, id)
                         val size = if (sizeIdx >= 0 && !c.isNull(sizeIdx)) c.getLong(sizeIdx) else 0L
                         val lastMod = if (lastModIdx >= 0 && !c.isNull(lastModIdx)) c.getLong(lastModIdx) else 0L
@@ -507,12 +473,6 @@ object SafManager {
         return results
     }
 
-    /**
-     * Android's ExternalStorageProvider hides Android/data and Android/obb from the
-     * normal children query of Android/ - re-query them directly by document ID and
-     * merge them back in. This is the same hack Material Files ships
-     * (ExternalStorageProviderHacks.kt).
-     */
     private fun mergeHiddenAndroidChildren(context: Context, treeUri: Uri, cursor: Cursor): Cursor {
         var hasData = false
         var hasObb = false
@@ -544,10 +504,6 @@ object SafManager {
     fun listChildPaths(context: Context, path: String): List<String> {
         return listFiles(context, path).map { it.file.path }
     }
-
-    // ---------------------------------------------------------------------
-    // Create / Delete / Rename
-    // ---------------------------------------------------------------------
 
     fun createDirectory(context: Context, path: String): Boolean {
         val normPath = normalizeSafPath(path)
@@ -603,7 +559,6 @@ object SafManager {
         val parentUri = if (isSafUri(parentPath)) Uri.parse(parentPath) else parent?.uri
         if (parent == null && parentUri == null) return null
 
-        // Only delete when a non-empty file already exists on non-SAF paths
         if (!isSafUri(normPath)) {
             try {
                 val existing = getDocumentFile(context, normPath)
@@ -636,14 +591,6 @@ object SafManager {
         return DocumentFile.fromSingleUri(context, createdUri)
     }
 
-    /**
-     * Best-effort file size for a SAF/content path. DocumentFile.length() is
-     * lazy for some cloud providers (Google Drive, etc.) and can report 0
-     * even for a file that clearly has content, which is what causes
-     * download progress to look "stuck at 0%". Cross-check against the
-     * OpenableColumns/Document cursor, which providers usually populate even
-     * when the DocumentFile wrapper hasn't resolved a length yet.
-     */
     fun getReliableSize(context: Context, path: String): Long {
         val uri = if (isSafUri(path)) Uri.parse(normalizeSafPath(path)) else getContentUri(context, path) ?: return 0L
         val doc = if (!isSafUri(path)) getDocumentFile(context, path) else null
@@ -662,16 +609,6 @@ object SafManager {
         }
     }
 
-    /**
-     * Some cloud providers - Google Drive chief among them - report a
-     * COLUMN_DISPLAY_NAME with no extension for perfectly ordinary binary
-     * files (a video or image uploaded through the web, say) even though the
-     * MIME type is known and correct. Writing that name straight to local
-     * storage lands on disk with no extension - "unknown file" the moment it
-     * leaves this app (can't be opened as .mp4/.png by anything else). If the
-     * name is missing an extension MimeTypeMap recognizes, but the MIME type
-     * maps to a real one, append that instead of trusting the bare name.
-     */
     fun ensureFileExtension(displayName: String, mimeType: String?): String {
         val existingExt = displayName.substringAfterLast('.', "")
         if (existingExt.isNotEmpty() && MimeTypeMap.getSingleton().hasExtension(existingExt.lowercase())) {
@@ -687,7 +624,6 @@ object SafManager {
         val normalized = normalizeSafPath(path)
         val uri = try { Uri.parse(normalized) } catch (e: Exception) { null }
 
-        // 1. Direct DocumentsContract delete on direct document URI (Google Drive and cloud providers require this!)
         if (uri != null && uri.scheme == "content") {
             val authority = uri.authority
             val docId = try { DocumentsContract.getDocumentId(uri) } catch (e: Exception) { null }
@@ -698,31 +634,25 @@ object SafManager {
                         return true
                     }
                 } catch (e: Exception) {
-                    // fall through
                 }
             }
 
-            // 1b. Try with original URI (e.g. tree document URI)
             try {
                 if (DocumentsContract.deleteDocument(context.contentResolver, uri)) {
                     return true
                 }
             } catch (e: Exception) {
-                // fall through
             }
         }
 
-        // 2. Try DocumentFile deletion
         val doc = getDocumentFile(context, path)
         if (doc != null) {
             try {
                 if (doc.delete()) return true
             } catch (e: Exception) {
-                // fall through
             }
         }
 
-        // 3. Fallback: DocumentsContract.removeDocument with parent DocumentFile or tree root
         if (uri != null && uri.scheme == "content") {
             try {
                 val parentDoc = getOrCreateParentDocumentFile(context, path)
@@ -732,7 +662,6 @@ object SafManager {
                     }
                 }
             } catch (e: Exception) {
-                // fall through
             }
 
             try {
@@ -746,7 +675,6 @@ object SafManager {
                     }
                 }
             } catch (e: Exception) {
-                // fall through
             }
         }
         return false
@@ -761,10 +689,6 @@ object SafManager {
         }
     }
 
-    /**
-     * Moves a document or folder within the same SAF DocumentProvider using DocumentsContract.moveDocument.
-     * This performs an instantaneous native filesystem move inside the ExternalStorageProvider.
-     */
     fun moveDocument(context: Context, sourcePath: String, targetParentPath: String): Boolean {
         val srcDoc = getDocumentFile(context, sourcePath) ?: return false
         val srcParentPath = sourcePath.substringBeforeLast("/", "")
@@ -787,13 +711,6 @@ object SafManager {
         }
     }
 
-    /**
-     * Copies a document or folder within the same SAF DocumentProvider using
-     * DocumentsContract.copyDocument (API 24+). Provider-side equivalent of moveDocument()
-     * -- all bytes are handled internally by ExternalStorageProvider so no data crosses the
-     * JVM or the Binder boundary. Near-instant for Android/data and Android/obb copies.
-     * Returns false if documents are from different authorities or if the operation fails.
-     */
     fun copyDocument(context: Context, sourcePath: String, targetParentPath: String): Boolean {
         val srcDoc = getDocumentFile(context, sourcePath) ?: return false
         val targetParentDoc = getDocumentFile(context, targetParentPath) ?: return false
@@ -808,10 +725,6 @@ object SafManager {
             false
         }
     }
-
-    // ---------------------------------------------------------------------
-    // Streams & Descriptors (Fast I/O)
-    // ---------------------------------------------------------------------
 
     fun openFileDescriptor(context: Context, path: String, mode: String = "r"): android.os.ParcelFileDescriptor? {
         val uri = getContentUri(context, path) ?: return null
@@ -895,9 +808,6 @@ object SafManager {
         }
     }
 
-    /**
-     * Recursively traverses a restricted folder tree via SAF to find files matching [query].
-     */
     fun searchFiles(
         context: Context,
         rootPath: String,

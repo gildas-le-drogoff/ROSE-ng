@@ -6,9 +6,9 @@
 
 A fast, modern, beautiful, and privacy-first Android file manager built with **Kotlin** and **Jetpack Compose** — fully vibe-coded, but professionally engineered.
 
-[![Platform](https://img.shields.io/badge/Platform-Android_8.0+-3DDC84?style=flat-square\&logo=android\&logoColor=white)](https://github.com/NarayanChetri/ROSE/releases/latest)
-[![Latest Release](https://img.shields.io/github/v/release/NarayanChetri/ROSE?style=flat-square\&color=blue\&logo=github)](https://github.com/NarayanChetri/ROSE/releases/latest)
-[![Total Downloads](https://img.shields.io/github/downloads/NarayanChetri/ROSE/total?style=flat-square\&color=brightgreen\&logo=github)](https://github.com/NarayanChetri/ROSE/releases)
+[![Platform](https://img.shields.io/badge/Platform-Android_8.0+-3DDC84?style=flat-square\&logo=android\&logoColor=white)](https://github.com/gildas-le-drogoff/ROSE-ng/releases/latest)
+[![Latest Release](https://img.shields.io/github/v/release/gildas-le-drogoff/ROSE?style=flat-square\&color=blue\&logo=github)](https://github.com/gildas-le-drogoff/ROSE-ng/releases/latest)
+[![Total Downloads](https://img.shields.io/github/downloads/gildas-le-drogoff/ROSE-ng/total?style=flat-square\&color=brightgreen\&logo=github)](https://github.com/gildas-le-drogoff/ROSE-ng/releases)
 [![License](https://img.shields.io/badge/License-GPL--3.0-blue?style=flat-square)](LICENSE)
 [![No Ads](https://img.shields.io/badge/Ads-Zero%20%2F%20Clean-success?style=flat-square)](#-features)
 [![Vibe Coded](https://img.shields.io/badge/Vibe%20Coded-Professionally%20Engineered-7C4DFF?style=flat-square)](#)
@@ -18,13 +18,13 @@ A fast, modern, beautiful, and privacy-first Android file manager built with **K
 
 ### 📥 Download ROSE
 
-<a href="https://github.com/NarayanChetri/ROSE/releases/latest">
+<a href="https://github.com/gildas-le-drogoff/ROSE-ng/releases/latest">
   <img src="https://img.shields.io/badge/⚡_DOWNLOAD_LATEST_APK-v2.1_(FREE)-00C853?style=for-the-badge&logo=android&logoColor=white&labelColor=1a1f2c" alt="Download Latest APK" height="50">
 </a>
 
   
 
-<a href="https://github.com/NarayanChetri/ROSE/releases">
+<a href="https://github.com/gildas-le-drogoff/ROSE-ng/releases">
   <img src="https://img.shields.io/badge/📦_ALL_RELEASES-GitHub-238636?style=for-the-badge&logo=github&logoColor=white&labelColor=24292f" alt="All Releases" height="50">
 </a>
 
@@ -90,7 +90,7 @@ A fast, modern, beautiful, and privacy-first Android file manager built with **K
 
 ## 🚀 Installation
 
-1. Download the latest `.apk` from **[GitHub Releases](https://github.com/NarayanChetri/ROSE/releases/latest)**.
+1. Download the latest `.apk` from **[GitHub Releases](https://github.com/gildas-le-drogoff/ROSE-ng/releases/latest)**.
 2. Open the downloaded APK on your Android device.
 3. Follow the on-screen instructions to install ROSE.
 

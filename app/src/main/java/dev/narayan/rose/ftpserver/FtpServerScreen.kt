@@ -1,6 +1,9 @@
 package dev.narayan.rose.ftpserver
 
+import dev.narayan.rose.roseNGLog
+
 import android.app.StatusBarManager
+import dev.narayan.rose.ui.icons.AppIcons
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.ComponentName
@@ -19,10 +22,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.*
-import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -42,8 +41,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.narayan.rose.R
 import dev.narayan.rose.RoseViewModel
-import dev.narayan.rose.SettingsManager
 import java.io.File
+import dev.narayan.rose.data.settings.SettingsManager
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalSharedTransitionApi::class)
 @Composable
@@ -65,7 +64,6 @@ fun FtpServerScreen(
     var homeDirectory by remember { mutableStateOf(settings.ftpServerHomeDirectory) }
     var writable by remember { mutableStateOf(settings.ftpServerWritable) }
 
-    // Dialog states
     var showPortDialog by remember { mutableStateOf(false) }
     var showUsernameDialog by remember { mutableStateOf(false) }
     var showPasswordDialog by remember { mutableStateOf(false) }
@@ -112,7 +110,7 @@ fun FtpServerScreen(
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(
-                            Icons.AutoMirrored.Filled.ArrowBack,
+                            AppIcons.ArrowBack,
                             contentDescription = stringResource(R.string.content_desc_back)
                         )
                     }
@@ -132,7 +130,6 @@ fun FtpServerScreen(
             verticalArrangement = Arrangement.spacedBy(16.dp),
             contentPadding = PaddingValues(top = 8.dp, bottom = 32.dp)
         ) {
-            // 1. Status & Main Switch Card
             item {
                 Card(
                     shape = RoundedCornerShape(24.dp),
@@ -165,7 +162,7 @@ fun FtpServerScreen(
                             contentAlignment = Alignment.Center
                         ) {
                             Icon(
-                                imageVector = if (ftpState == FtpServerState.RUNNING) Icons.Default.WifiTethering else Icons.Default.Dns,
+                                imageVector = if (ftpState == FtpServerState.RUNNING) AppIcons.WifiTethering else AppIcons.Dns,
                                 contentDescription = null,
                                 tint = iconBg,
                                 modifier = Modifier.size(28.dp)
@@ -206,7 +203,6 @@ fun FtpServerScreen(
                 }
             }
 
-            // 2. Active Connection Details Card
             item {
                 AnimatedVisibility(
                     visible = ftpState == FtpServerState.RUNNING || localIp != null,
@@ -227,7 +223,7 @@ fun FtpServerScreen(
                         ) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Icon(
-                                    imageVector = Icons.Default.Link,
+                                    imageVector = AppIcons.Link,
                                     contentDescription = null,
                                     tint = MaterialTheme.colorScheme.primary,
                                     modifier = Modifier.size(20.dp)
@@ -273,7 +269,7 @@ fun FtpServerScreen(
                                             modifier = Modifier.size(32.dp)
                                         ) {
                                             Icon(
-                                                Icons.Default.ContentCopy,
+                                                AppIcons.ContentCopy,
                                                 contentDescription = stringResource(R.string.ftp_server_url_menu_copy_url),
                                                 modifier = Modifier.size(18.dp),
                                                 tint = MaterialTheme.colorScheme.primary
@@ -318,7 +314,7 @@ fun FtpServerScreen(
                                             contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
                                             shape = RoundedCornerShape(10.dp)
                                         ) {
-                                            Icon(Icons.Default.ContentCopy, null, modifier = Modifier.size(14.dp))
+                                            Icon(AppIcons.ContentCopy, null, modifier = Modifier.size(14.dp))
                                             Spacer(modifier = Modifier.width(6.dp))
                                             Text(stringResource(R.string.ftp_server_password_title), style = MaterialTheme.typography.labelSmall)
                                         }
@@ -332,7 +328,7 @@ fun FtpServerScreen(
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Icon(
-                                        Icons.Default.WifiOff,
+                                        AppIcons.WifiOff,
                                         contentDescription = null,
                                         tint = MaterialTheme.colorScheme.error,
                                         modifier = Modifier.size(20.dp)
@@ -350,7 +346,6 @@ fun FtpServerScreen(
                 }
             }
 
-            // 3. Configuration Section
             item {
                 Text(
                     text = stringResource(R.string.ftp_server_configuration_title),
@@ -370,9 +365,8 @@ fun FtpServerScreen(
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Column(modifier = Modifier.fillMaxWidth()) {
-                        // Anonymous Login Setting
                         FtpSettingSwitchRow(
-                            icon = Icons.Outlined.PersonOutline,
+                            icon = AppIcons.PersonOutline,
                             title = stringResource(R.string.ftp_server_anonymous_login_title),
                             subtitle = stringResource(R.string.ftp_server_anonymous_login_summary),
                             checked = anonymousLogin,
@@ -384,11 +378,10 @@ fun FtpServerScreen(
                             }
                         )
 
-                        // Username (only if not anonymous)
                         if (!anonymousLogin) {
                             HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
                             FtpSettingClickableRow(
-                                icon = Icons.Outlined.Badge,
+                                icon = AppIcons.BadgeOutlined,
                                 title = stringResource(R.string.ftp_server_username_title),
                                 value = username,
                                 enabled = !isRunning,
@@ -397,7 +390,7 @@ fun FtpServerScreen(
 
                             HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
                             FtpSettingClickableRow(
-                                icon = Icons.Outlined.Lock,
+                                icon = AppIcons.LockOutlined,
                                 title = stringResource(R.string.ftp_server_password_title),
                                 value = if (password.isEmpty()) "None" else "••••••••",
                                 enabled = !isRunning,
@@ -407,9 +400,8 @@ fun FtpServerScreen(
 
                         HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
 
-                        // Port
                         FtpSettingClickableRow(
-                            icon = Icons.Outlined.Numbers,
+                            icon = AppIcons.Numbers,
                             title = stringResource(R.string.ftp_server_port_title),
                             value = port.toString(),
                             enabled = !isRunning,
@@ -418,9 +410,8 @@ fun FtpServerScreen(
 
                         HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
 
-                        // Root Folder
                         FtpSettingClickableRow(
-                            icon = Icons.Outlined.FolderOpen,
+                            icon = AppIcons.FolderOpenOutlined,
                             title = stringResource(R.string.ftp_server_home_directory_title),
                             value = if (homeDirectory == Environment.getExternalStorageDirectory().absolutePath) "Internal Storage" else homeDirectory,
                             enabled = !isRunning,
@@ -429,9 +420,8 @@ fun FtpServerScreen(
 
                         HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
 
-                        // Allow Writing
                         FtpSettingSwitchRow(
-                            icon = Icons.Outlined.Edit,
+                            icon = AppIcons.EditOutlined,
                             title = stringResource(R.string.ftp_server_writable_title),
                             subtitle = stringResource(R.string.ftp_server_writable_summary),
                             checked = writable,
@@ -445,7 +435,6 @@ fun FtpServerScreen(
                 }
             }
 
-            // Quick Settings Tile Shortcut (Android 13+)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 item {
                     Card(
@@ -471,7 +460,7 @@ fun FtpServerScreen(
                                 contentAlignment = Alignment.Center
                             ) {
                                 Icon(
-                                    Icons.Default.AddBox,
+                                    AppIcons.AddBox,
                                     contentDescription = null,
                                     tint = MaterialTheme.colorScheme.primary,
                                     modifier = Modifier.size(22.dp)
@@ -495,7 +484,6 @@ fun FtpServerScreen(
                 }
             }
 
-            // 4. Instructions Card
             item {
                 Card(
                     shape = RoundedCornerShape(20.dp),
@@ -507,7 +495,7 @@ fun FtpServerScreen(
                     Column(modifier = Modifier.padding(18.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Icon(
-                                Icons.Outlined.Info,
+                                AppIcons.InfoOutlined,
                                 contentDescription = null,
                                 tint = MaterialTheme.colorScheme.primary,
                                 modifier = Modifier.size(20.dp)
@@ -552,7 +540,6 @@ fun FtpServerScreen(
     }
     }
 
-    // Dialogs
     if (showPortDialog) {
         var portText by remember { mutableStateOf(port.toString()) }
         AlertDialog(
@@ -646,7 +633,7 @@ fun FtpServerScreen(
                     trailingIcon = {
                         IconButton(onClick = { showPasswordText = !showPasswordText }) {
                             Icon(
-                                if (showPasswordText) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                if (showPasswordText) AppIcons.VisibilityOff else AppIcons.Visibility,
                                 contentDescription = null
                             )
                         }
@@ -819,9 +806,8 @@ private fun requestAddQuickSettingsTile(context: Context) {
                 Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
             }
         } catch (e: Exception) {
-            e.printStackTrace()
+            roseNGLog.e("FtpServer", e) { "Failed to request Quick Settings tile" }
             Toast.makeText(context, "Error adding tile: ${e.message}", Toast.LENGTH_SHORT).show()
         }
     }
 }
-

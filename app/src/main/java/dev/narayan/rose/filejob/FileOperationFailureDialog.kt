@@ -1,13 +1,11 @@
 package dev.narayan.rose.filejob
 
 import androidx.compose.foundation.background
+import dev.narayan.rose.ui.icons.AppIcons
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
-import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -50,7 +48,6 @@ fun FileOperationFailureDialog(
             Column(
                 modifier = Modifier.padding(24.dp)
             ) {
-                // Header with warning icon and title
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier.fillMaxWidth()
@@ -63,7 +60,7 @@ fun FileOperationFailureDialog(
                         contentAlignment = Alignment.Center
                     ) {
                         Icon(
-                            imageVector = Icons.Default.ErrorOutline,
+                            imageVector = AppIcons.ErrorOutline,
                             contentDescription = null,
                             tint = MaterialTheme.colorScheme.error,
                             modifier = Modifier.size(24.dp)
@@ -94,7 +91,6 @@ fun FileOperationFailureDialog(
 
                 Spacer(modifier = Modifier.height(16.dp))
 
-                // Scrollable list of failed files matching CX File Explorer styling
                 LazyColumn(
                     modifier = Modifier
                         .weight(1f, fill = false)
@@ -115,7 +111,7 @@ fun FileOperationFailureDialog(
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Icon(
-                                    imageVector = Icons.AutoMirrored.Filled.InsertDriveFile,
+                                    imageVector = AppIcons.InsertDriveFile,
                                     contentDescription = null,
                                     tint = MaterialTheme.colorScheme.primary,
                                     modifier = Modifier.size(28.dp)
@@ -154,7 +150,6 @@ fun FileOperationFailureDialog(
 
                 Spacer(modifier = Modifier.height(20.dp))
 
-                // Action button: OK
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.End

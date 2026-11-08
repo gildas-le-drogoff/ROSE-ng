@@ -41,7 +41,7 @@ data class CompressSource(
 
 object ArchiveManager {
 
-    private const val BUFFER_SIZE = 128 * 1024 // 128KB
+    private const val BUFFER_SIZE = 128 * 1024
 
     fun isEncryptionError(e: Throwable?): Boolean {
         var cur = e
@@ -66,12 +66,10 @@ object ArchiveManager {
     fun isArchiveEncrypted(file: File): Boolean {
         if (!file.exists() || file.isDirectory || file.length() == 0L) return false
 
-        // 1. Fast binary check for ZIP format general purpose bit flag (bit 0 = encrypted)
         try {
             if (isZipBinaryEncrypted(file)) return true
         } catch (e: Exception) {}
 
-        // 2. Check using libarchive header inspection
         try {
             RandomAccessFile(file, "r").use { raf ->
                 val channel = raf.channel
@@ -98,13 +96,11 @@ object ArchiveManager {
             if (isEncryptionError(e)) return true
         }
 
-        // 3. Fallback check using ZipFile (handles CEN encrypted or other central directory exceptions)
         try {
             ZipFile(file).use { zip ->
                 val enumEntries = zip.entries()
                 while (enumEntries.hasMoreElements()) {
                     val entry = enumEntries.nextElement()
-                    // Java ZipFile does not expose encryption per-entry, but parses central directory
                 }
             }
         } catch (e: Exception) {
@@ -119,11 +115,9 @@ object ArchiveManager {
         RandomAccessFile(file, "r").use { raf ->
             val header = ByteArray(30)
             raf.readFully(header)
-            // Local file header signature: 0x04034b50 (little-endian: 0x50, 0x4b, 0x03, 0x04)
             if (header[0] == 0x50.toByte() && header[1] == 0x4b.toByte() &&
                 header[2] == 0x03.toByte() && header[3] == 0x04.toByte()) {
                 val flags = (header[6].toInt() and 0xFF) or ((header[7].toInt() and 0xFF) shl 8)
-                // Bit 0: encrypted
                 if ((flags and 0x0001) != 0) return true
             }
         }
@@ -136,8 +130,7 @@ object ArchiveManager {
                 readEntries(raf.channel)
             }
         } catch (e: Exception) {
-            e.printStackTrace()
-            // Fallback to stream if channel fails
+            roseNGLog.e("Archive", e) { "readEntries failed for ${file.name}" }
             try {
                 FileInputStream(file).use { fis -> readEntries(fis) }
             } catch (e2: Exception) {
@@ -147,7 +140,6 @@ object ArchiveManager {
 
         if (entries.isNotEmpty()) return entries
 
-        // Fallback to ZipFile (vital for APKs with v2/v3 signing blocks or non-standard ZIP headers)
         return try {
             readEntriesZipFallback(file)
         } catch (e: Exception) {
@@ -192,7 +184,7 @@ object ArchiveManager {
                 entries.add(RoseArchiveEntry(name, isDir, size, mtime, isEncrypted))
             }
         } catch (e: Exception) {
-            e.printStackTrace()
+            roseNGLog.e("Archive", e) { "readEntries (fd) failed" }
         } finally {
             Archive.readFree(archive)
         }
@@ -220,7 +212,7 @@ object ArchiveManager {
                 entries.add(RoseArchiveEntry(name, isDir, size, mtime, isEncrypted))
             }
         } catch (e: Exception) {
-            e.printStackTrace()
+            roseNGLog.e("Archive", e) { "readEntries (stream) failed" }
         } finally {
             Archive.readFree(archive)
         }
@@ -244,18 +236,12 @@ object ArchiveManager {
                 else -> {
                     Archive.writeSetFormatZip(archive)
 
-                    // Speed up compression by using a lower compression level.
-                    // Level 6 (default) is often too slow for mobile CPUs, while
-                    // Level 1-4 provides a much better speed/ratio balance.
                     try {
                         Archive.writeSetOptions(archive, "zip:compression-level=4".toByteArray())
                     } catch (e: Throwable) {}
 
                     if (!passphrase.isNullOrEmpty()) {
                         try {
-                            // zip:encryption=aes256 is the modern standard but requires a 
-                            // libarchive built with crypto support (like mbedTLS or OpenSSL).
-                            // We try AES256 first, then fallback to traditional zipcrypt.
                             try {
                                 Archive.writeSetOptions(archive, "zip:encryption=aes256".toByteArray())
                             } catch (e: Throwable) {
@@ -265,7 +251,7 @@ object ArchiveManager {
                             }
                             Archive.writeSetPassphrase(archive, passphrase.toByteArray())
                         } catch (e: Throwable) {
-                            e.printStackTrace()
+                            roseNGLog.e("Archive", e) { "Failed to set archive passphrase" }
                         }
                     }
                 }
@@ -325,7 +311,7 @@ object ArchiveManager {
                             }
                             Archive.writeSetPassphrase(archive, passphrase.toByteArray())
                         } catch (e: Throwable) {
-                            e.printStackTrace()
+                            roseNGLog.e("Archive", e) { "Failed to set archive passphrase" }
                         }
                     }
                 }
@@ -452,7 +438,7 @@ object ArchiveManager {
                 }
             } catch (e2: Exception) {
                 lastError = e2
-                e2.printStackTrace()
+                roseNGLog.e("Archive", e2) { "Entry extraction attempt failed for $entryPath" }
             }
         }
 
@@ -594,14 +580,14 @@ object ArchiveManager {
                 }
             }
         } catch (e: Exception) {
-            e.printStackTrace()
+            roseNGLog.e("Archive", e) { "libarchive extraction failed for $entryName" }
         }
 
         if (!extractedAny) {
             try {
                 extractToZipFallback(archiveFile, entryName, dest)
             } catch (e: Exception) {
-                e.printStackTrace()
+                roseNGLog.e("Archive", e) { "Zip fallback extraction failed for $entryName" }
             }
         }
     }
@@ -670,7 +656,7 @@ object ArchiveManager {
             }
         } catch (e: Exception) {
             caughtException = e
-            e.printStackTrace()
+            roseNGLog.e("Archive", e) { "Archive extraction failed" }
         }
 
         if (caughtException != null) {
@@ -784,7 +770,7 @@ object ArchiveManager {
                 }
             }
         } catch (e: Exception) {
-            e.printStackTrace()
+            roseNGLog.e("Archive", e) { "Reading archive entry bytes failed" }
             null
         }
 
@@ -836,7 +822,7 @@ object ArchiveManager {
             try {
                 Archive.readAddPassphrase(archive, passphrase.toByteArray())
             } catch (e: Throwable) {
-                e.printStackTrace()
+                roseNGLog.e("Archive", e) { "Failed to add read passphrase" }
             }
         }
         Archive.readSetCallbackData(archive, null)
@@ -882,7 +868,7 @@ object ArchiveManager {
             try {
                 Archive.readAddPassphrase(archive, passphrase.toByteArray())
             } catch (e: Throwable) {
-                e.printStackTrace()
+                roseNGLog.e("Archive", e) { "Failed to add read passphrase" }
             }
         }
         Archive.readSetCallbackData(archive, null)

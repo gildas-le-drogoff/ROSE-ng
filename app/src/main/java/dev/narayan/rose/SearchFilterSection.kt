@@ -1,6 +1,9 @@
 package dev.narayan.rose
 
+import androidx.compose.ui.res.vectorResource
+import androidx.annotation.DrawableRes
 import androidx.compose.animation.animateColorAsState
+import dev.narayan.rose.ui.icons.AppIcons
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -26,15 +29,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Android
-import androidx.compose.material.icons.filled.Archive
-import androidx.compose.material.icons.filled.Description
-import androidx.compose.material.icons.filled.GridView
-import androidx.compose.material.icons.filled.Image
-import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.SearchOff
-import androidx.compose.material.icons.filled.VideoLibrary
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -51,19 +45,24 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import dev.narayan.rose.domain.model.FileItem
+import dev.narayan.rose.domain.model.matchesCategory
+import dev.narayan.rose.domain.model.FileType
 
 enum class SearchFilter(
     val label: String,
-    val icon: ImageVector,
+    @DrawableRes val iconRes: Int,
     val accentColor: Color,
     val fileType: FileType?
 ) {
-    ALL("All", Icons.Default.GridView, Color(0xFF3D72ED), null),
-    PHOTOS("Photos", Icons.Default.Image, Color(0xFF4C8DFF), FileType.IMAGE),
-    VIDEOS("Videos", Icons.Default.VideoLibrary, Color(0xFF9C6ADE), FileType.VIDEO),
-    DOCUMENTS("Documents", Icons.Default.Description, Color(0xFF4C9A72), FileType.DOCUMENT),
-    ARCHIVES("Archives", Icons.Default.Archive, Color(0xFFC98A2E), FileType.ZIP),
-    APKS("APKs", Icons.Default.Android, Color(0xFF4CAF7D), FileType.APK);
+    ALL("All", R.drawable.ic_grid_view_fill, Color(0xFF3D72ED), null),
+    PHOTOS("Photos", R.drawable.ic_image_fill, Color(0xFF4C8DFF), FileType.IMAGE),
+    VIDEOS("Videos", R.drawable.ic_video_library_fill, Color(0xFF9C6ADE), FileType.VIDEO),
+    DOCUMENTS("Documents", R.drawable.ic_description_fill, Color(0xFF4C9A72), FileType.DOCUMENT),
+    ARCHIVES("Archives", R.drawable.ic_archive_fill, Color(0xFFC98A2E), FileType.ZIP),
+    APKS("APKs", R.drawable.ic_android, Color(0xFF4CAF7D), FileType.APK);
+
+    val icon: ImageVector @Composable get() = ImageVector.vectorResource(iconRes)
 
     fun matches(item: FileItem): Boolean {
         return when (this) {
@@ -260,7 +259,6 @@ fun SearchLoadingView(
                 contentAlignment = Alignment.Center,
                 modifier = Modifier.size(72.dp)
             ) {
-                // Outer subtle glowing/pulsing circle
                 Box(
                     modifier = Modifier
                         .size(68.dp)
@@ -268,7 +266,6 @@ fun SearchLoadingView(
                         .clip(CircleShape)
                         .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f))
                 )
-                // Center icon
                 Surface(
                     shape = CircleShape,
                     color = MaterialTheme.colorScheme.primaryContainer,
@@ -276,14 +273,13 @@ fun SearchLoadingView(
                 ) {
                     Box(contentAlignment = Alignment.Center) {
                         Icon(
-                            imageVector = Icons.Default.Search,
+                            imageVector = AppIcons.Search,
                             contentDescription = null,
                             tint = MaterialTheme.colorScheme.primary,
                             modifier = Modifier.size(26.dp)
                         )
                     }
                 }
-                // Spinner around the icon
                 CircularProgressIndicator(
                     modifier = Modifier.size(68.dp),
                     strokeWidth = 2.5.dp,
@@ -339,7 +335,7 @@ fun SearchEmptyStateView(
             ) {
                 Box(contentAlignment = Alignment.Center) {
                     Icon(
-                        imageVector = Icons.Default.SearchOff,
+                        imageVector = AppIcons.SearchOff,
                         contentDescription = null,
                         tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
                         modifier = Modifier.size(28.dp)
@@ -372,4 +368,3 @@ fun SearchEmptyStateView(
         }
     }
 }
-

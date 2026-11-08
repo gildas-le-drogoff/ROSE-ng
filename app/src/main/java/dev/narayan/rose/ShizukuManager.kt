@@ -6,7 +6,6 @@ import android.content.ServiceConnection
 import android.content.pm.PackageManager
 import android.os.IBinder
 import android.os.ParcelFileDescriptor
-import android.util.Log
 import dev.narayan.rose.shizuku.IShizukuService
 import dev.narayan.rose.shizuku.ShizukuService
 import rikka.shizuku.Shizuku
@@ -17,6 +16,11 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
+import dev.narayan.rose.domain.model.FileItem
+import dev.narayan.rose.domain.model.matchesCategory
+import dev.narayan.rose.domain.model.FileType
+
+private val MULTI_SLASH = Regex("/+")
 
 object ShizukuManager {
 
@@ -29,7 +33,7 @@ object ShizukuManager {
 
     private val userServiceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
-            Log.d(TAG, "ShizukuService connected")
+            roseNGLog.d(TAG) { "ShizukuService connected" }
             synchronized(userServiceLock) {
                 userService = IShizukuService.Stub.asInterface(service)
                 isBindingUserService = false
@@ -46,7 +50,7 @@ object ShizukuManager {
         }
 
         override fun onServiceDisconnected(name: ComponentName?) {
-            Log.d(TAG, "ShizukuService disconnected")
+            roseNGLog.d(TAG) { "ShizukuService disconnected" }
             synchronized(userServiceLock) {
                 userService = null
                 isBindingUserService = false
@@ -71,7 +75,7 @@ object ShizukuManager {
                 }
                 listenerRegistered = true
             } catch (e: Throwable) {
-                Log.w(TAG, "Failed to register Shizuku listeners", e)
+                roseNGLog.w(TAG, e) { "Failed to register Shizuku listeners" }
             }
         }
     }
@@ -98,7 +102,7 @@ object ShizukuManager {
             Shizuku.bindUserService(args, userServiceConnection)
             true
         } catch (e: Throwable) {
-            Log.e(TAG, "Failed to bind Shizuku UserService", e)
+            roseNGLog.e(TAG, e) { "Failed to bind Shizuku UserService" }
             synchronized(userServiceLock) {
                 isBindingUserService = false
                 (userServiceLock as java.lang.Object).notifyAll()
@@ -136,7 +140,7 @@ object ShizukuManager {
         return try {
             service?.openFile(clean, mode)
         } catch (e: Throwable) {
-            Log.e(TAG, "Error opening file descriptor via ShizukuService: $clean", e)
+            roseNGLog.e(TAG, e) { "Error opening file descriptor via ShizukuService: $clean" }
             null
         }
     }
@@ -150,7 +154,7 @@ object ShizukuManager {
                 bindUserService(context)
             }
         } catch (e: Throwable) {
-            e.printStackTrace()
+            roseNGLog.e("ShizukuManager", e) { "Shizuku initialisation failed" }
         }
     }
 
@@ -185,35 +189,16 @@ object ShizukuManager {
         return newProcess(arrayOf("sh", "-c", command), null, null)
     }
 
-    /**
-     * Single-quotes a shell argument so it is always treated as one opaque
-     * literal by `sh -c`, regardless of what characters it contains
-     * (spaces, ", `, $, ;, backticks, newlines, etc). Every path/name that
-     * gets interpolated into a command string built for [runShizukuCommand]
-     * MUST go through this first - Android file/folder names are free-form
-     * and can legally contain shell metacharacters, so building commands
-     * with raw string interpolation (e.g. "rm -rf \"$path\"") is a command
-     * injection vulnerability: a file named `foo"; rm -rf /; echo "` would
-     * execute arbitrary shell commands with Shizuku's elevated privileges.
-     *
-     * Standard POSIX single-quote escaping: wrap in single quotes, and for
-     * every literal single quote in the input, close the quote, emit an
-     * escaped quote, and reopen the quote (' -> '\'').
-     */
     fun shellEscape(arg: String): String {
         return "'" + arg.replace("'", "'\\''") + "'"
     }
 
-    /**
-     * Normalizes paths to canonical /storage/emulated/0 form, matching NFile Manager logic.
-     * Skips normalization for URIs to prevent breaking them.
-     */
     fun normalize(path: String): String {
         if (path.startsWith("content://") || path.startsWith("file://") || path.startsWith("/content:/") || path.contains("://")) {
             return path
         }
 
-        var normalized = path.replace(Regex("/+"), "/")
+        var normalized = if (path.contains("//")) path.replace(MULTI_SLASH, "/") else path
         if (normalized.isEmpty()) normalized = "/"
 
         if (normalized.startsWith("/sdcard")) {
@@ -224,10 +209,6 @@ object ShizukuManager {
         return normalized
     }
 
-    /**
-     * Exactly NFile Manager logic for listing files via Shizuku.
-     * Uses a robust shell command to gather type, size, modified time, and full path.
-     */
     suspend fun listFiles(path: String, showHiddenFiles: Boolean = true): List<FileItem> = withContext(Dispatchers.IO) {
         val results = mutableListOf<FileItem>()
         val normalizedPath = normalize(path)
@@ -238,14 +219,11 @@ object ShizukuManager {
             normalizedPath.substring(0, normalizedPath.length - 1)
         }
 
-        // If cleanPath is "/", use empty string prefix to prevent search pattern from becoming //* and //.*
         val searchPrefix = if (cleanPath == "/") "" else cleanPath
 
         try {
             val escapedPrefix = shellEscape(searchPrefix)
 
-            // Step 1: Pre-calculate immediate child counts for all subdirectories in a single fast command (~15-20ms).
-            // -mindepth 2 -maxdepth 2 visits only the immediate children of the subdirectories and stops there.
             val childCounts = mutableMapOf<String, Int>()
             try {
                 val countCmd = "find $escapedPrefix -mindepth 2 -maxdepth 2 2>/dev/null"
@@ -266,13 +244,9 @@ object ShizukuManager {
                 }
                 countProc.waitFor()
             } catch (e: Throwable) {
-                Log.w(TAG, "Error pre-counting subfolder items for $searchPrefix", e)
+                roseNGLog.w(TAG, e) { "Error pre-counting subfolder items for $searchPrefix" }
             }
 
-            // Step 2: High-performance batch stat.
-            // Using safe globbing that matches non-hidden files and hidden files without ever matching "." or "..":
-            // $escapedPrefix/* $escapedPrefix/.[!.]* $escapedPrefix/..?*
-            // stat -c (without -L) stats files and symlinks directly without failing on broken symlinks.
             val cmd = "stat -c '%F|%s|%Y|%n' $escapedPrefix/* $escapedPrefix/.[!.]* $escapedPrefix/..?* 2>/dev/null"
 
             fun parseLines(reader: BufferedReader) {
@@ -319,7 +293,6 @@ object ShizukuManager {
             parseLines(BufferedReader(InputStreamReader(process.inputStream)))
             process.waitFor()
 
-            // Fallback: If wildcard batch produced no items, check if a directory has thousands of entries exceeding ARG_MAX
             if (results.isEmpty()) {
                 val fallbackCmd = "for f in $escapedPrefix/* $escapedPrefix/.[!.]* $escapedPrefix/..?*; do [ -e \"\$f\" ] || [ -L \"\$f\" ] && stat -c '%F|%s|%Y|%n' \"\$f\" 2>/dev/null; done"
                 val fallbackProc = runShizukuCommand(fallbackCmd)
@@ -327,16 +300,11 @@ object ShizukuManager {
                 fallbackProc.waitFor()
             }
         } catch (e: Throwable) {
-            Log.e(TAG, "Error listing files for $searchPrefix", e)
+            roseNGLog.e(TAG, e) { "Error listing files for $searchPrefix" }
         }
-        // Crucial safety guarantee: ensure every file item has a unique absolutePath.
-        // Prevents Compose LazyColumn/LazyVerticalGrid crashes (IllegalArgumentException: Key already used).
         results.distinctBy { it.file.absolutePath }
     }
 
-    /**
-     * Accurately calculates folder size recursively via Shizuku using native du command.
-     */
     fun getFolderSize(path: String): Long {
         if (!isAvailable() || !hasPermission()) return 0L
         val clean = normalize(path)
@@ -348,14 +316,11 @@ object ShizukuManager {
             val kb = output.split(Regex("\\s+")).firstOrNull()?.toLongOrNull() ?: 0L
             kb * 1024L
         } catch (e: Throwable) {
-            Log.e(TAG, "Error calculating folder size for $path", e)
+            roseNGLog.e(TAG, e) { "Error calculating folder size for $path" }
             0L
         }
     }
 
-    /**
-     * Gets accurate file size via Shizuku stat command.
-     */
     fun getFileSize(path: String): Long {
         if (!isAvailable() || !hasPermission()) return 0L
         val clean = normalize(path)
@@ -383,9 +348,6 @@ object ShizukuManager {
         }
     }
 
-    /**
-     * Checks if a file or directory exists via Shizuku.
-     */
     fun exists(path: String): Boolean {
         if (!isAvailable() || !hasPermission()) return false
         val clean = normalize(path)
@@ -408,9 +370,6 @@ object ShizukuManager {
         }
     }
 
-    /**
-     * Streams file contents from a restricted path to a local destination file.
-     */
     fun copyToFile(srcPath: String, destFile: File): Boolean {
         if (!isAvailable() || !hasPermission()) return false
         val clean = normalize(srcPath)
@@ -424,36 +383,29 @@ object ShizukuManager {
             val code = process.waitFor()
             code == 0 && destFile.exists()
         } catch (e: Throwable) {
-            Log.e(TAG, "Error copying $srcPath to $destFile via Shizuku", e)
+            roseNGLog.e(TAG, e) { "Error copying $srcPath to $destFile via Shizuku" }
             false
         }
     }
 
-    /** Matches NFile's runCommand logic. Returns true if exit code is 0. */
     suspend fun runCommand(command: String): Boolean = withContext(Dispatchers.IO) {
         runCommandSync(command) == 0
     }
 
-    /**
-     * Synchronous version of runCommand for use in background threads where suspend
-     * isn't available (like FileOperationRunner).
-     */
     fun runCommandSync(command: String): Int {
         return try {
             val process = runShizukuCommand(command)
             val result = process.waitFor()
             if (result != 0) {
                 val errText = process.errorStream.bufferedReader().readText().trim()
-                if (errText.isNotEmpty()) Log.e(TAG, "Command failed: $command, stderr: $errText")
+                if (errText.isNotEmpty()) roseNGLog.e(TAG) { "Command failed: $command, stderr: $errText" }
             }
             result
         } catch (e: Exception) {
-            Log.e(TAG, "Execution failed for: $command", e)
+            roseNGLog.e(TAG, e) { "Execution failed for: $command" }
             -1
         }
     }
-
-    // --- High-level operations matching NFile logic ---
 
     suspend fun delete(path: String): Boolean {
         val clean = normalize(path)
@@ -491,9 +443,6 @@ object ShizukuManager {
         return runCommand("mv ${shellEscape(cleanSrc)} ${shellEscape(cleanDest)}")
     }
 
-    /**
-     * High performance recursive file search within [searchRoot] using native find and stat via Shizuku.
-     */
     suspend fun searchFiles(
         searchRoot: String,
         query: String,
@@ -572,7 +521,7 @@ object ShizukuManager {
         } catch (e: CancellationException) {
             throw e
         } catch (e: Throwable) {
-            Log.e(TAG, "Error searching files via Shizuku in $cleanRoot", e)
+            roseNGLog.e(TAG, e) { "Error searching files via Shizuku in $cleanRoot" }
         }
         results.take(maxResults).distinctBy { it.file.absolutePath }
     }

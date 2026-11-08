@@ -20,7 +20,7 @@ The easiest way to translate ROSE is directly in your web browser using **Hosted
 ## 📖 How to Contribute via GitHub (For Developers)
 
 ### 1. Fork & Clone
-Fork the [ROSE repository](https://github.com/NarayanChetri/ROSE) and clone it locally:
+Fork the [ROSE repository](https://github.com/gildas-le-drogoff/ROSE-ng) and clone it locally:
 ```bash
 git clone https://github.com/<your-username>/ROSE.git
 cd ROSE
@@ -165,11 +165,10 @@ If you see an error like `Mismatched formatting specifier` or `Apostrophe not es
    ```bash
    git push origin translation-<locale>
    ```
-3. Open a **Pull Request** on the main [ROSE repository](https://github.com/NarayanChetri/ROSE).
+3. Open a **Pull Request** on the main [ROSE repository](https://github.com/gildas-le-drogoff/ROSE-ng).
 
 ---
 
 ## ❤️ Credits
 
 All translation contributors will be credited in release notes. Thank you for making ROSE better for everyone!
-

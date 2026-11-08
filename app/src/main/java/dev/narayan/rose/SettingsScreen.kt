@@ -14,9 +14,6 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -32,15 +29,17 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.imageLoader
+import dev.narayan.rose.ui.icons.AppIcons
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import dev.narayan.rose.domain.model.FileItem
+import dev.narayan.rose.domain.model.ThemeMode
+import dev.narayan.rose.domain.model.StartPage
+import dev.narayan.rose.ui.explorer.*
+import dev.narayan.rose.ui.home.*
 
-/**
- * Settings, redesigned: grouped cards per section with a leading icon,
- * rather than one long scrolling list. Behaviour is unchanged from before.
- */
 @OptIn(ExperimentalMaterial3Api::class, coil.annotation.ExperimentalCoilApi::class)
 @Composable
 fun SettingsScreen(
@@ -85,7 +84,7 @@ fun SettingsScreen(
                 title = { Text(stringResource(R.string.settings_title), fontWeight = FontWeight.SemiBold) },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.content_desc_back))
+                        Icon(AppIcons.ArrowBack, contentDescription = stringResource(R.string.content_desc_back))
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
@@ -104,8 +103,7 @@ fun SettingsScreen(
         ) {
             Spacer(modifier = Modifier.height(8.dp))
 
-            // ---------- Appearance ----------
-            SettingsSection(title = stringResource(R.string.settings_section_appearance), icon = Icons.Default.Palette) {
+            SettingsSection(title = stringResource(R.string.settings_section_appearance), icon = AppIcons.Palette) {
                 SettingsGroup {
                     SettingsChoiceRow(
                         title = stringResource(R.string.settings_theme),
@@ -115,7 +113,7 @@ fun SettingsScreen(
                     )
                     SettingsDivider()
                     SettingsSwitchRow(
-                        icon = Icons.Default.Contrast,
+                        icon = AppIcons.Contrast,
                         title = stringResource(R.string.settings_amoled_mode),
                         subtitle = stringResource(R.string.settings_amoled_mode_subtitle),
                         checked = viewModel.amoledMode,
@@ -124,7 +122,7 @@ fun SettingsScreen(
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                         SettingsDivider()
                         SettingsSwitchRow(
-                            icon = Icons.Default.ColorLens,
+                            icon = AppIcons.ColorLens,
                             title = stringResource(R.string.settings_dynamic_color),
                             subtitle = stringResource(R.string.settings_dynamic_color_subtitle),
                             checked = viewModel.dynamicColorEnabled,
@@ -134,8 +132,7 @@ fun SettingsScreen(
                 }
             }
 
-            // ---------- Browsing ----------
-            SettingsSection(title = stringResource(R.string.settings_section_browsing), icon = Icons.Default.Folder) {
+            SettingsSection(title = stringResource(R.string.settings_section_browsing), icon = AppIcons.Folder) {
                 SettingsGroup {
                     SettingsChoiceRow(
                         title = stringResource(R.string.settings_recent_files_limit),
@@ -145,7 +142,7 @@ fun SettingsScreen(
                     )
                     SettingsDivider()
                     SettingsSwitchRow(
-                        icon = Icons.Default.HorizontalRule,
+                        icon = AppIcons.HorizontalRule,
                         title = stringResource(R.string.settings_show_list_dividers),
                         subtitle = stringResource(R.string.settings_show_list_dividers_subtitle),
                         checked = viewModel.showListDividers,
@@ -153,7 +150,7 @@ fun SettingsScreen(
                     )
                     SettingsDivider()
                     SettingsSwitchRow(
-                        icon = Icons.Default.Folder,
+                        icon = AppIcons.Folder,
                         title = stringResource(R.string.settings_folders_first),
                         subtitle = stringResource(R.string.settings_folders_first_subtitle),
                         checked = viewModel.foldersFirst,
@@ -161,7 +158,7 @@ fun SettingsScreen(
                     )
                     SettingsDivider()
                     SettingsSwitchRow(
-                        icon = Icons.Default.FolderOpen,
+                        icon = AppIcons.FolderOpen,
                         title = stringResource(R.string.settings_show_folder_size),
                         subtitle = stringResource(R.string.settings_show_folder_size_subtitle),
                         checked = viewModel.showFolderSize,
@@ -169,7 +166,7 @@ fun SettingsScreen(
                     )
                     SettingsDivider()
                     SettingsActionRow(
-                        icon = Icons.Default.VisibilityOff,
+                        icon = AppIcons.VisibilityOff,
                         iconTint = MaterialTheme.colorScheme.primary,
                         title = stringResource(R.string.settings_excluded_folders),
                         subtitle = stringResource(R.string.settings_excluded_folders_subtitle),
@@ -178,8 +175,7 @@ fun SettingsScreen(
                 }
             }
 
-            // ---------- Navigation ----------
-            SettingsSection(title = stringResource(R.string.settings_section_navigation), icon = Icons.Default.Explore) {
+            SettingsSection(title = stringResource(R.string.settings_section_navigation), icon = AppIcons.Explore) {
                 SettingsGroup {
                     SettingsChoiceRow(
                         title = stringResource(R.string.settings_start_page),
@@ -190,11 +186,10 @@ fun SettingsScreen(
                 }
             }
 
-            // ---------- Safety ----------
-            SettingsSection(title = stringResource(R.string.settings_section_safety), icon = Icons.Default.Shield) {
+            SettingsSection(title = stringResource(R.string.settings_section_safety), icon = AppIcons.Shield) {
                 SettingsGroup {
                     SettingsSwitchRow(
-                        icon = Icons.Default.WarningAmber,
+                        icon = AppIcons.WarningAmber,
                         title = stringResource(R.string.settings_confirm_before_delete),
                         subtitle = stringResource(R.string.settings_confirm_before_delete_subtitle),
                         checked = viewModel.confirmBeforeDelete,
@@ -202,7 +197,7 @@ fun SettingsScreen(
                     )
                     SettingsDivider()
                     SettingsSwitchRow(
-                        icon = Icons.Default.RestoreFromTrash,
+                        icon = AppIcons.RestoreFromTrash,
                         title = stringResource(R.string.settings_use_recycle_bin),
                         subtitle = stringResource(R.string.settings_use_recycle_bin_subtitle),
                         checked = viewModel.useRecycleBin,
@@ -211,11 +206,10 @@ fun SettingsScreen(
                 }
             }
 
-            // ---------- Home Screen ----------
-            SettingsSection(title = stringResource(R.string.settings_section_home_screen), icon = Icons.Default.Home) {
+            SettingsSection(title = stringResource(R.string.settings_section_home_screen), icon = AppIcons.Home) {
                 SettingsGroup {
                     SettingsSwitchRow(
-                        icon = Icons.Default.Schedule,
+                        icon = AppIcons.Schedule,
                         title = stringResource(R.string.settings_show_recent_files),
                         subtitle = stringResource(R.string.settings_show_recent_files_subtitle),
                         checked = viewModel.showRecentFiles,
@@ -224,12 +218,10 @@ fun SettingsScreen(
                 }
             }
 
-
-            // ---------- Storage ----------
-            SettingsSection(title = stringResource(R.string.settings_section_storage), icon = Icons.Default.Storage) {
+            SettingsSection(title = stringResource(R.string.settings_section_storage), icon = AppIcons.Storage) {
                 SettingsGroup {
                     SettingsActionRow(
-                        icon = Icons.Default.CleaningServices,
+                        icon = AppIcons.CleaningServices,
                         iconTint = MaterialTheme.colorScheme.primary,
                         title = stringResource(R.string.settings_clear_thumbnail_cache),
                         subtitle = stringResource(R.string.settings_clear_thumbnail_cache_subtitle),
@@ -248,11 +240,10 @@ fun SettingsScreen(
                 }
             }
 
-            // ---------- Root Access ----------
-            SettingsSection(title = stringResource(R.string.settings_section_root), icon = Icons.Default.AdminPanelSettings) {
+            SettingsSection(title = stringResource(R.string.settings_section_root), icon = AppIcons.AdminPanelSettings) {
                 SettingsGroup {
                     SettingsSwitchRow(
-                        icon = Icons.Default.Terminal,
+                        icon = AppIcons.Terminal,
                         title = stringResource(R.string.settings_enable_root),
                         subtitle = stringResource(R.string.settings_enable_root_subtitle),
                         checked = viewModel.useRoot,
@@ -278,32 +269,30 @@ fun SettingsScreen(
                 }
             }
 
-            // ---------- Updates ----------
-            SettingsSection(title = stringResource(R.string.settings_section_updates), icon = Icons.Default.SystemUpdate) {
+            SettingsSection(title = stringResource(R.string.settings_section_updates), icon = AppIcons.SystemUpdate) {
                 SettingsGroup {
                     SettingsSwitchRow(
-                        icon = Icons.Default.Sync,
+                        icon = AppIcons.Sync,
                         title = stringResource(R.string.settings_auto_check_updates),
                         subtitle = stringResource(R.string.settings_auto_check_updates_subtitle),
-                        checked = viewModel.autoCheckUpdates,
-                        onCheckedChange = { viewModel.setAutoCheckUpdates(it) }
+                        checked = viewModel.updates.autoCheckUpdates,
+                        onCheckedChange = { viewModel.updates.setAutoCheckUpdates(it) }
                     )
                 }
             }
 
-            // ---------- Support ----------
-            SettingsSection(title = stringResource(R.string.settings_section_support), icon = Icons.Default.Favorite) {
+            SettingsSection(title = stringResource(R.string.settings_section_support), icon = AppIcons.Favorite) {
                 SettingsGroup {
                     SettingsActionRow(
-                        icon = Icons.Default.BugReport,
+                        icon = AppIcons.BugReport,
                         iconTint = MaterialTheme.colorScheme.error,
                         title = stringResource(R.string.settings_report_issue),
                         subtitle = stringResource(R.string.settings_report_issue_subtitle),
-                        onClick = { uriHandler.openUri("https://github.com/NarayanChetri/ROSE/issues") }
+                        onClick = { uriHandler.openUri("https://github.com/gildas-le-drogoff/ROSE-ng/issues") }
                     )
                     SettingsDivider()
                     SettingsActionRow(
-                        icon = Icons.Default.Coffee,
+                        icon = AppIcons.Coffee,
                         iconTint = Color(0xFFFF5E5B),
                         title = stringResource(R.string.settings_buy_coffee),
                         subtitle = stringResource(R.string.settings_buy_coffee_subtitle),
@@ -317,7 +306,6 @@ fun SettingsScreen(
     }
 }
 
-/** Section label with a small leading icon, followed by its content. */
 @Composable
 private fun SettingsSection(
     title: String,
@@ -345,7 +333,6 @@ private fun SettingsSection(
     Column(content = content)
 }
 
-/** Rounded card container that groups related rows together. */
 @Composable
 private fun SettingsGroup(content: @Composable ColumnScope.() -> Unit) {
     Card(
@@ -432,14 +419,13 @@ private fun SettingsActionRow(
             Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         Icon(
-            Icons.Default.ChevronRight,
+            AppIcons.ChevronRight,
             contentDescription = null,
             tint = MaterialTheme.colorScheme.onSurfaceVariant
         )
     }
 }
 
-/** Row of segmented choices (theme, grid size, start page, ...). */
 @Composable
 private fun <T> SettingsChoiceRow(
     title: String,
@@ -499,7 +485,7 @@ private fun ExcludedFoldersDialog(
                     contentAlignment = Alignment.Center
                 ) {
                     Icon(
-                        Icons.Default.VisibilityOff,
+                        AppIcons.VisibilityOff,
                         contentDescription = null,
                         tint = MaterialTheme.colorScheme.primary,
                         modifier = Modifier.size(24.dp)
@@ -519,7 +505,7 @@ private fun ExcludedFoldersDialog(
                     )
                 }
                 IconButton(onClick = onDismiss) {
-                    Icon(Icons.Default.Close, contentDescription = stringResource(R.string.action_close))
+                    Icon(AppIcons.Close, contentDescription = stringResource(R.string.action_close))
                 }
             }
 
@@ -532,7 +518,7 @@ private fun ExcludedFoldersDialog(
                 ) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         Icon(
-                            Icons.Default.VisibilityOff,
+                            AppIcons.VisibilityOff,
                             contentDescription = null,
                             modifier = Modifier.size(64.dp),
                             tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.2f)
@@ -555,7 +541,7 @@ private fun ExcludedFoldersDialog(
                         val rootPath = Environment.getExternalStorageDirectory().absolutePath
                         val internalStorageName = stringResource(R.string.storage_internal)
                         val displayPath = folder.replace(rootPath, internalStorageName)
-                        
+
                         Surface(
                             color = MaterialTheme.colorScheme.surfaceContainerLow,
                             shape = RoundedCornerShape(16.dp),
@@ -572,7 +558,7 @@ private fun ExcludedFoldersDialog(
                                     contentAlignment = Alignment.Center
                                 ) {
                                     Icon(
-                                        Icons.Default.Folder,
+                                        AppIcons.Folder,
                                         contentDescription = null,
                                         tint = MaterialTheme.colorScheme.primary,
                                         modifier = Modifier.size(20.dp)
@@ -601,7 +587,7 @@ private fun ExcludedFoldersDialog(
                                     ),
                                     modifier = Modifier.size(32.dp)
                                 ) {
-                                    Icon(Icons.Default.Delete, contentDescription = stringResource(R.string.action_remove), modifier = Modifier.size(18.dp))
+                                    Icon(AppIcons.Delete, contentDescription = stringResource(R.string.action_remove), modifier = Modifier.size(18.dp))
                                 }
                             }
                         }
@@ -617,7 +603,7 @@ private fun ExcludedFoldersDialog(
                     .height(56.dp),
                 shape = RoundedCornerShape(16.dp)
             ) {
-                Icon(Icons.Default.Add, contentDescription = null)
+                Icon(AppIcons.Add, contentDescription = null)
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(stringResource(R.string.action_add_folder_to_exclude), style = MaterialTheme.typography.titleMedium)
             }
@@ -634,7 +620,7 @@ private fun FolderPickerDialog(
 ) {
     val rootDir = remember { Environment.getExternalStorageDirectory() }
     var currentDir by remember { mutableStateOf(rootDir) }
-    
+
     val vm = (LocalContext.current as? androidx.activity.ComponentActivity)?.let { (it as? MainActivity)?.viewModel }
 
     val normalizedExcluded = remember(excludedFolders) {
@@ -645,7 +631,6 @@ private fun FolderPickerDialog(
     }
     val isCurrentDirAdded = isFolderExcluded(currentDir.absolutePath)
 
-    // Use FileItems to match the main listing and provide item counts
     val subDirs = remember(currentDir) {
         currentDir.listFiles { f -> f.isDirectory && !f.name.startsWith(".") }
             ?.map { dir ->
@@ -661,7 +646,6 @@ private fun FolderPickerDialog(
             }?.sortedBy { it.name.lowercase() } ?: emptyList()
     }
 
-    // Full-screen immersive browser (matches the app's own file listing screen)
     androidx.compose.ui.window.Dialog(
         onDismissRequest = onDismiss,
         properties = androidx.compose.ui.window.DialogProperties(
@@ -709,7 +693,7 @@ private fun FolderPickerDialog(
                             }
                         }) {
                             Icon(
-                                if (currentDir != rootDir) Icons.AutoMirrored.Filled.ArrowBack else Icons.Default.Close,
+                                if (currentDir != rootDir) AppIcons.ArrowBack else AppIcons.Close,
                                 contentDescription = stringResource(R.string.content_desc_back)
                             )
                         }
@@ -717,7 +701,7 @@ private fun FolderPickerDialog(
                     actions = {
                         if (currentDir != rootDir) {
                             IconButton(onClick = { currentDir = rootDir }) {
-                                Icon(Icons.Default.Home, contentDescription = stringResource(R.string.content_desc_go_to_root))
+                                Icon(AppIcons.Home, contentDescription = stringResource(R.string.content_desc_go_to_root))
                             }
                         }
                     }
@@ -739,7 +723,7 @@ private fun FolderPickerDialog(
                             modifier = Modifier.fillMaxWidth().height(56.dp),
                             shape = RoundedCornerShape(16.dp)
                         ) {
-                            Icon(Icons.Default.Check, null)
+                            Icon(AppIcons.Check, null)
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
                                 if (isCurrentDirAdded) stringResource(R.string.folder_already_added)
@@ -807,7 +791,7 @@ private fun FolderPickerRow(
             animatedProgress.animateTo(1f, tween(durationMillis = 200, easing = LinearOutSlowInEasing))
         }
     }
-    
+
     ListItem(
         headlineContent = {
             Row(
@@ -854,7 +838,7 @@ private fun FolderPickerRow(
         },
         trailingContent = {
             Icon(
-                Icons.Default.ChevronRight,
+                AppIcons.ChevronRight,
                 contentDescription = null,
                 tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
             )

@@ -1,6 +1,7 @@
 package dev.narayan.rose.update
 
 import androidx.compose.animation.AnimatedVisibility
+import dev.narayan.rose.ui.icons.AppIcons
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
@@ -10,9 +11,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -22,21 +20,11 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import dev.narayan.rose.R
-import dev.narayan.rose.UpdateDownloadState
-import dev.narayan.rose.UpdateInfo
 import dev.narayan.rose.document.MarkdownText
-import dev.narayan.rose.formatFileSize
+import dev.narayan.rose.ui.explorer.formatFileSize
 import kotlinx.coroutines.launch
+import dev.narayan.rose.ui.explorer.*
 
-/**
- * Modern, attractive Material 3 ModalBottomSheet displaying available update info.
- * Includes:
- * - Clear version header & dismiss (X) button
- * - Scrollable release notes rendered via MarkdownText
- * - Live download progress / install / retry actions
- * - Inline "Check for updates automatically" toggle
- * - Primary "Update" button and secondary "Skip this version" button
- */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun UpdateBottomSheet(
@@ -76,7 +64,6 @@ fun UpdateBottomSheet(
                 .padding(horizontal = 24.dp)
                 .padding(bottom = 28.dp)
         ) {
-            // Header Row: Icon, Title & Version, Close Button
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -93,7 +80,7 @@ fun UpdateBottomSheet(
                     contentAlignment = Alignment.Center
                 ) {
                     Icon(
-                        imageVector = Icons.Default.SystemUpdate,
+                        imageVector = AppIcons.SystemUpdate,
                         contentDescription = null,
                         tint = MaterialTheme.colorScheme.onPrimaryContainer,
                         modifier = Modifier.size(26.dp)
@@ -121,14 +108,13 @@ fun UpdateBottomSheet(
                     modifier = Modifier.size(36.dp)
                 ) {
                     Icon(
-                        imageVector = Icons.Default.Close,
+                        imageVector = AppIcons.Close,
                         contentDescription = stringResource(R.string.action_cancel),
                         tint = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }
 
-            // Release Notes Section
             if (info.releaseNotes.isNotBlank()) {
                 Text(
                     text = stringResource(R.string.update_sheet_whats_new),
@@ -157,7 +143,6 @@ fun UpdateBottomSheet(
                 }
             }
 
-            // Download State Feedback
             AnimatedVisibility(
                 visible = downloadState !is UpdateDownloadState.Idle,
                 enter = fadeIn(),
@@ -229,7 +214,6 @@ fun UpdateBottomSheet(
 
             Spacer(modifier = Modifier.height(14.dp))
 
-            // Inline "Check for updates automatically" Toggle
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -263,7 +247,6 @@ fun UpdateBottomSheet(
 
             Spacer(modifier = Modifier.height(16.dp))
 
-            // Action Buttons: Update and Skip this version
             Column(
                 modifier = Modifier.fillMaxWidth(),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
@@ -341,7 +324,6 @@ fun UpdateBottomSheet(
                     }
                 }
 
-                // Skip this version button
                 OutlinedButton(
                     onClick = {
                         smoothDismiss {
@@ -362,4 +344,3 @@ fun UpdateBottomSheet(
         }
     }
 }
-

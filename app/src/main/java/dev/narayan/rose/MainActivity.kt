@@ -1,6 +1,7 @@
 package dev.narayan.rose
 
 import android.Manifest
+import dev.narayan.rose.ui.icons.AppIcons
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -25,12 +26,6 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.NotificationsActive
-import androidx.compose.material.icons.filled.Schedule
-import androidx.compose.material.icons.filled.Lock
-import androidx.compose.material.icons.outlined.Schedule
-import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -57,6 +52,11 @@ import dev.narayan.rose.ftpserver.FtpServerNotification
 import dev.narayan.rose.ui.TintedGlassNavigationBar
 import dev.chrisbanes.haze.HazeState
 import dev.chrisbanes.haze.hazeSource
+import dev.narayan.rose.domain.model.FileItem
+import dev.narayan.rose.domain.model.FileType
+import dev.narayan.rose.domain.model.StartPage
+import dev.narayan.rose.update.UpdateCheckResult
+import dev.narayan.rose.ui.explorer.*
 
 @OptIn(ExperimentalSharedTransitionApi::class, ExperimentalMaterial3Api::class)
 class MainActivity : androidx.fragment.app.FragmentActivity() {
@@ -103,7 +103,7 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
         val path = viewModel.pendingSafPath ?: viewModel.currentPath
-        viewModel.clearPendingSaf() // Clear it immediately
+        viewModel.clearPendingSaf()
 
         if (result.resultCode == RESULT_OK) {
             val uri = result.data?.data
@@ -138,7 +138,6 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
             }
             viewModel.onShizukuResult(granted, path)
             if (!granted && !viewModel.isShizukuRestrictedPath(path)) {
-                // If Shizuku denied, fallback to SAF only for non-Android/data paths
                 viewModel.retrySaf(path)
             }
         }
@@ -190,25 +189,11 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
                 amoled = viewModel.amoledMode,
                 dynamicColor = viewModel.dynamicColorEnabled
             ) {
-                // Asking for notification permission the instant the app opens - before the
-                // user has even seen a file - reads as generic OS boilerplate and has nothing
-                // to anchor the "why" to. Instead, ask contextually: the first time a
-                // background job actually needs a notification. That's downloads only -
-                // FileJobService already posts Delete/Copy/Move/Recycle/Restore jobs to a
-                // silent channel with no visible notification (see isDownload there), so
-                // asking for the permission for those jobs has nothing to show the user even
-                // if granted. Gating on `is FileJobType.Download` here, not just
-                // `activeJobs.isNotEmpty()`, is what keeps the primer from popping up on
-                // every delete/copy/paste.
                 val activeJobs by JobManager.activeJobs.collectAsState()
                 val hasActiveDownload = activeJobs.values.any { it.type is dev.narayan.rose.filejob.FileJobType.Download }
                 var showNotificationPrimer by remember { mutableStateOf(false) }
                 val coroutineScope = rememberCoroutineScope()
 
-                // Delete, Recycle and Restore are near-instant (typically just a file move
-                // or metadata update), so showing the full detail dialog or mini bar
-                // (built for long transfers) just flashes them open and shut. Split them
-                // out into a tiny, cosmetic center spinner instead.
                 val fastJobs = remember(activeJobs) {
                     activeJobs.values.filter {
                         it.type is dev.narayan.rose.filejob.FileJobType.Delete ||
@@ -224,10 +209,6 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
                     }
                 }
 
-                // Lives at the Activity level (not inside FileExplorerScreen) so the mini
-                // progress bar keeps showing no matter which screen is on top - Home,
-                // Files, Recycle Bin, etc. - for as long as a job is running, instead of
-                // vanishing the moment the user navigates away from All Files.
                 var showJobDetailsDialog by remember { mutableStateOf(false) }
                 LaunchedEffect(otherJobs.isNotEmpty()) {
                     if (otherJobs.isNotEmpty()) showJobDetailsDialog = true
@@ -278,7 +259,7 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
                                 contentAlignment = Alignment.Center
                             ) {
                                 Icon(
-                                    Icons.Filled.NotificationsActive,
+                                    AppIcons.NotificationsActive,
                                     contentDescription = null,
                                     tint = MaterialTheme.colorScheme.primary,
                                     modifier = Modifier.size(30.dp)
@@ -321,32 +302,31 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
                     }
                 }
 
-                // Automatic & manual update bottom sheet
-                val updateCheckResult = viewModel.updateCheckResult
+                val updateCheckResult = viewModel.updates.updateCheckResult
                 if (updateCheckResult is UpdateCheckResult.UpdateAvailable) {
                     val uriHandler = androidx.compose.ui.platform.LocalUriHandler.current
                     val context = androidx.compose.ui.platform.LocalContext.current
                     UpdateBottomSheet(
                         info = updateCheckResult.info,
-                        downloadState = viewModel.updateDownloadState,
-                        autoCheckEnabled = viewModel.autoCheckUpdates,
-                        onAutoCheckToggle = { viewModel.setAutoCheckUpdates(it) },
+                        downloadState = viewModel.updates.updateDownloadState,
+                        autoCheckEnabled = viewModel.updates.autoCheckUpdates,
+                        onAutoCheckToggle = { viewModel.updates.setAutoCheckUpdates(it) },
                         onDismiss = {
-                            viewModel.dismissUpdateSheet()
+                            viewModel.updates.dismissUpdateSheet()
                         },
                         onUpdate = {
                             if (updateCheckResult.info.apkUrl != null) {
-                                viewModel.downloadAndInstallUpdate(updateCheckResult.info)
+                                viewModel.updates.downloadAndInstallUpdate(updateCheckResult.info)
                             } else {
                                 uriHandler.openUri(updateCheckResult.info.downloadUrl)
-                                viewModel.dismissUpdateSheet()
+                                viewModel.updates.dismissUpdateSheet()
                             }
                         },
                         onInstallClick = {
-                            viewModel.installDownloadedUpdate()
+                            viewModel.updates.installDownloadedUpdate()
                         },
                         onSkipVersion = {
-                            viewModel.skipVersion(updateCheckResult.info.tagName)
+                            viewModel.updates.skipVersion(updateCheckResult.info.tagName)
                             Toast.makeText(
                                 context,
                                 context.getString(R.string.toast_skipped_version_info),
@@ -356,7 +336,6 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
                     )
                 }
 
-                // Handle SAF requests
                 LaunchedEffect(viewModel.pendingSafPath) {
                     viewModel.pendingSafPath?.let { path ->
                         val intent = SafManager.requestPermission(this@MainActivity, path)
@@ -366,7 +345,6 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
                     }
                 }
 
-                // Handle Shizuku requests
                 LaunchedEffect(viewModel.pendingShizukuPath) {
                     viewModel.pendingShizukuPath?.let { path ->
                         if (ShizukuManager.isAvailable()) {
@@ -395,8 +373,6 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
                 ) {
-                    // Hoisted scroll states to ensure they survive screen transitions (Home <-> Files)
-                    // and Activity re-compositions. Moved outside the permission block to be absolutely stable.
                     val homeListState = androidx.compose.foundation.lazy.rememberLazyListState()
                     val recycleBinListState = androidx.compose.foundation.lazy.rememberLazyListState()
                     val explorerListState = androidx.compose.foundation.lazy.rememberLazyListState()
@@ -421,7 +397,6 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
                             )
                         }
 
-                        // Handle FTP notification click
                         LaunchedEffect(pendingFtpNavigation) {
                             if (pendingFtpNavigation) {
                                 screen = AppScreen.FtpServer
@@ -429,16 +404,14 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
                             }
                         }
 
-                        // Handle auto-navigation (e.g. when USB is attached and user selects ROSE)
-                        LaunchedEffect(viewModel.pendingNavigationPath) {
-                            viewModel.pendingNavigationPath?.let { path ->
+                        LaunchedEffect(viewModel.storage.pendingNavigationPath) {
+                            viewModel.storage.pendingNavigationPath?.let { path ->
                                 viewModel.resetFiles()
                                 screen = AppScreen.Files(startPath = path, fromHome = true)
-                                viewModel.clearPendingNavigation()
+                                viewModel.storage.clearPendingNavigation()
                             }
                         }
 
-                        // Handle viewed archive
                         LaunchedEffect(pendingArchiveUri) {
                             pendingArchiveUri?.let { uri ->
                                 val isArchive = isArchiveUri(uri)
@@ -481,21 +454,15 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
                             }
                         }
 
-                        // Handle shared files
                         LaunchedEffect(sharedUris) {
                             sharedUris?.let { uris ->
                                 if (uris.isNotEmpty()) {
-                                    // isZip is a legacy name kept to avoid touching the
-                                    // SaveAsScreen/AppScreen.SaveAs signatures - it really
-                                    // means "is a single archive we can preview" and now
-                                    // covers rar/7z/tar/etc, not just zip. See isArchiveUri().
                                     val isZip = uris.size == 1 && isArchiveUri(uris[0])
                                     screen = AppScreen.SaveAs(uris, isZip)
                                 }
                             }
                         }
 
-                        // Handle viewed/edited document (.md or .txt)
                         LaunchedEffect(pendingDocument) {
                             pendingDocument?.let { (source, isMarkdown) ->
                                 val backScreen = when (val s = screen) {
@@ -531,13 +498,11 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
                                                 .togetherWith(slideOutHorizontally(animationSpec = tween(320, easing = FastOutSlowInEasing)) { -it } + fadeOut(tween(200)))
                                                 .using(SizeTransform(clip = false))
                                         } else if (initial is AppScreen.Home && target is AppScreen.Files && target.isFromAllFiles) {
-                                            // Exact old All Files capsule animation
                                             (fadeIn(tween(250, easing = FastOutSlowInEasing)) +
                                                     slideInVertically(tween(250, easing = FastOutSlowInEasing)) { it / 20 })
                                                 .togetherWith(fadeOut(tween(150, easing = FastOutSlowInEasing)))
                                                 .using(SizeTransform(clip = false))
                                         } else if (initial is AppScreen.Files && initial.isFromAllFiles && target is AppScreen.Home) {
-                                            // Exact old All Files capsule return animation
                                             (fadeIn(tween(160, easing = FastOutSlowInEasing)) +
                                                     scaleIn(initialScale = 0.97f, animationSpec = tween(160, easing = FastOutSlowInEasing)))
                                                 .togetherWith(fadeOut(tween(90, easing = FastOutSlowInEasing)))
@@ -546,7 +511,6 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
                                                 (target is AppScreen.Files && (target.category != null || target.favourites)) ||
                                                 target is AppScreen.FtpServer
                                         )) {
-                                            // Category container transform: Fast, responsive and smooth expansion
                                             (fadeIn(animationSpec = tween(200, easing = FastOutSlowInEasing)))
                                                 .togetherWith(
                                                     fadeOut(animationSpec = tween(160, easing = FastOutSlowInEasing))
@@ -556,7 +520,6 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
                                                 (initial is AppScreen.Files && (initial.category != null || initial.favourites)) ||
                                                 initial is AppScreen.FtpServer
                                         )) {
-                                            // Return from Category to Home: Snappy minimize back into card
                                             (fadeIn(animationSpec = tween(160, easing = FastOutSlowInEasing)))
                                                 .togetherWith(
                                                     fadeOut(animationSpec = tween(200, easing = FastOutSlowInEasing))
@@ -568,7 +531,6 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
                                                 target is AppScreen.Settings ||
                                                 target is AppScreen.About
                                         )) {
-                                            // Smooth forward slide animation when opening Quick Access folders, Recycle Bin, etc.
                                             (slideInHorizontally(animationSpec = tween(300, easing = FastOutSlowInEasing)) { it } + fadeIn(tween(220)))
                                                 .togetherWith(slideOutHorizontally(animationSpec = tween(300, easing = FastOutSlowInEasing)) { -it / 4 } + fadeOut(tween(180)))
                                         } else if (target is AppScreen.Home && (
@@ -577,7 +539,6 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
                                                 initial is AppScreen.Settings ||
                                                 initial is AppScreen.About
                                         )) {
-                                            // Smooth backward slide animation when returning to Home
                                             (slideInHorizontally(animationSpec = tween(280, easing = FastOutSlowInEasing)) { -it / 4 } + fadeIn(tween(220)))
                                                 .togetherWith(slideOutHorizontally(animationSpec = tween(280, easing = FastOutSlowInEasing)) { it } + fadeOut(tween(180)))
                                         } else {
@@ -779,7 +740,7 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
                                                             onOpenCategory = { type, title ->
                                                                 viewModel.lastNavigationTimestamp = System.currentTimeMillis()
                                                                 viewModel.resetFiles()
-                                                                viewModel.browseCategory(type, title)
+                                                                viewModel.categories.browseCategory(type, title)
                                                                 screen = AppScreen.Files(category = type to title, fromHome = true)
                                                             },
                                                             onOpenFavourites = {
@@ -840,7 +801,7 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
                                             onExitToHome = {
                                                 viewModel.lastNavigationTimestamp = System.currentTimeMillis()
                                                 viewModel.resetFiles()
-                                                viewModel.exitCategoryMode()
+                                                viewModel.categories.exitCategoryMode()
                                                 coroutineScope.launch {
                                                     homePagerState.scrollToPage(1)
                                                 }
@@ -890,7 +851,6 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
                                             onArchiveView = { uri ->
                                                 viewModel.resetFiles()
                                                 screen = AppScreen.Files(startPath = uri.toString(), fromHome = true)
-                                                // Keep sharedUris so we can come back
                                             }
                                         )
                                         AppScreen.Settings -> SettingsScreen(
@@ -958,16 +918,10 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
                                 }
                             }
 
-                            // Tinted glass navigation bar behind system navigation buttons
-                            // only active when 3-button / 2-button navigation is used and not in selection mode
                             if (!viewModel.isSelectionMode) {
                                 TintedGlassNavigationBar(hazeState = hazeState)
                             }
 
-                            // Global mini bar + detailed dialog for in-flight jobs - lives
-                            // above the AnimatedContent so it survives Home <-> Files <->
-                            // Recycle Bin navigation instead of resetting per screen.
-                            // Delete jobs are handled separately below (see deleteJobs).
                             if (otherJobs.isNotEmpty() && !showJobDetailsDialog) {
                                 Box(
                                     modifier = Modifier
@@ -995,9 +949,6 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
                                 )
                             }
 
-                            // Fast jobs (Delete/Recycle/Restore): no dialog, no mini bar - just
-                            // a small centered spinner that fades in/out, since they are fast
-                            // enough that the full progress UI would only ever flash.
                             androidx.compose.animation.AnimatedVisibility(
                                 visible = fastJobs.isNotEmpty(),
                                 enter = androidx.compose.animation.fadeIn(androidx.compose.animation.core.tween(120)),
@@ -1094,10 +1045,7 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
                 uris?.let { sharedUris = it }
             }
             android.hardware.usb.UsbManager.ACTION_USB_DEVICE_ATTACHED -> {
-                // The user tapped ROSE in the Android USB app-chooser dialog.
-                // Tell the ViewModel to automatically navigate to the first
-                // USB storage device it sees once Android finishes mounting it.
-                viewModel.handleUsbDeviceAttached()
+                viewModel.storage.handleUsbDeviceAttached()
             }
         }
     }
@@ -1131,12 +1079,6 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
         }
     }
 
-    // Content Uris shared from other apps (WhatsApp, Gmail, etc.) almost never have a
-    // real file extension in their path, so MimeTypeMap.getFileExtensionFromUrl(uri)
-    // alone silently returns "" for them - this was why sharing a .rar/.7z (and often
-    // even a .zip or .apk) here used to skip straight to "Save to..." instead of offering
-    // Archive viewer/Save as. Cross-check the resolver's reported MIME type and the
-    // provider's DISPLAY_NAME column, which reflect the real file name/type.
     private fun isArchiveUri(uri: Uri): Boolean {
         val mimeType = try { contentResolver.getType(uri) } catch (e: Exception) { null }
         if (mimeType != null && mimeType in archiveMimeTypes) return true
@@ -1214,7 +1156,6 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
         if (fileItems.isEmpty()) return
 
         lifecycleScope.launch(Dispatchers.IO) {
-            // Clean up stale temporary share files older than 15 minutes before starting new share
             CacheCleaner.cleanStaleShareFiles(this@MainActivity, maxAgeMs = 15 * 60 * 1000L)
             val newlyCreatedTempFiles = mutableListOf<File>()
             val uris = ArrayList<Uri>()
@@ -1239,7 +1180,6 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
                         return@launch
                     }
 
-                    // Extract virtual file to cache before sharing
                     val cacheFile = File(cacheDir, "share_${System.currentTimeMillis()}_${item.name}")
                     try {
                         cacheFile.outputStream().use { output ->
@@ -1273,7 +1213,6 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
                 } else {
                     val path = item.file.absolutePath
                     if (SafManager.isRestrictedPath(path)) {
-                        // Files here don't exist from java.io.File's point of view
                         if (item.file.exists() && item.file.canRead()) {
                             uris.add(FileProvider.getUriForFile(
                                 this@MainActivity,
@@ -1377,7 +1316,6 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
                     return null
                 }
 
-                // Clean up previous temp_open_ files to prevent cache accumulation
                 cacheDir.listFiles()?.filter { it.name.startsWith("temp_open_") }?.forEach {
                     runCatching { it.deleteRecursively() }
                 }
@@ -1480,8 +1418,6 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
                         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                     }
-                    // Try returning this if we have it, or let the caller decide
-                    // For now, openFile handles it differently
                 }
             }
 
@@ -1559,7 +1495,6 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
 
         val intent = createViewIntent(fileItem, passphrase) ?: return
         try {
-            // Check for offline file first (simplified from previous implementation)
             if (fileItem.fileType == FileType.VIDEO || fileItem.fileType == FileType.AUDIO || fileItem.fileType == FileType.IMAGE) {
                 viewModel.getLocalOfflineFile(fileItem)?.let { localFile ->
                     val localUri = FileProvider.getUriForFile(this, "${packageName}.provider", localFile)
@@ -1587,7 +1522,6 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
         }
     }
 
-
     internal fun openRecycledFile(item: RecycledItem) {
         val file = RecycleBinManager.getRecycledFile(this, item)
         if (!file.exists()) {
@@ -1597,7 +1531,6 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
 
         val uri = FileProvider.getUriForFile(this, "${packageName}.provider", file)
 
-        // Use the original name to get the correct MIME type
         val extension = item.originalName.substringAfterLast('.', "").lowercase()
         var type = MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension)
 
@@ -1628,32 +1561,22 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
         }
     }
 
-    // -------------------------------------------------------------------------
-    // USB / SD hot-plug: listen for MEDIA_* broadcasts while the app is
-    // in the foreground (onStart → onStop window). Registration is done
-    // programmatically (not in the manifest) so we only receive events
-    // while the Activity is visible — no wasted work in the background.
-    // -------------------------------------------------------------------------
     private val storageReceiver = object : android.content.BroadcastReceiver() {
         override fun onReceive(context: android.content.Context?, intent: Intent?) {
             intent ?: return
-            // Extract the filesystem path from the intent's data URI
-            // (e.g. "file:///storage/xxxx-xxxx" → "/storage/xxxx-xxxx")
             val path = intent.data?.path ?: ""
             when (intent.action) {
                 Intent.ACTION_MEDIA_MOUNTED -> {
-                    // New volume appeared (USB inserted or SD card mounted)
-                    viewModel.loadStorageDevices()
+                    viewModel.storage.loadStorageDevices()
                 }
                 Intent.ACTION_MEDIA_REMOVED,
                 Intent.ACTION_MEDIA_UNMOUNTED,
                 Intent.ACTION_MEDIA_EJECT,
                 Intent.ACTION_MEDIA_BAD_REMOVAL -> {
-                    // Volume gone — refresh list and navigate away if we are inside it
                     if (path.isNotEmpty()) {
-                        viewModel.onStorageEjected(path)
+                        viewModel.storage.onStorageEjected(path)
                     } else {
-                        viewModel.loadStorageDevices()
+                        viewModel.storage.loadStorageDevices()
                     }
                 }
             }
@@ -1668,8 +1591,6 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
             addAction(Intent.ACTION_MEDIA_UNMOUNTED)
             addAction(Intent.ACTION_MEDIA_EJECT)
             addAction(Intent.ACTION_MEDIA_BAD_REMOVAL)
-            // Required for all MEDIA_* intents — without this the receiver
-            // never fires even when the action string matches.
             addDataScheme("file")
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -1696,7 +1617,7 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
 
     override fun onStop() {
         super.onStop()
-        try { unregisterReceiver(storageReceiver) } catch (e: IllegalArgumentException) { /* already unregistered */ }
+        try { unregisterReceiver(storageReceiver) } catch (e: IllegalArgumentException) {  }
     }
 
     override fun onDestroy() {
@@ -1707,7 +1628,6 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
         Shizuku.removeRequestPermissionResultListener(shizukuPermissionListener)
         Shizuku.removeBinderReceivedListener(shizukuBinderListener)
     }
-
 
     private fun hasStoragePermission(): Boolean {
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {

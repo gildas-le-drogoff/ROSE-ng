@@ -14,12 +14,16 @@ class RoseApplication : Application(), ImageLoaderFactory {
 
     override fun onCreate() {
         super.onCreate()
-        ShizukuManager.init(this)
-        // Automatically clean all leaked/bloated cache asynchronously on startup.
-        // This ensures that when existing users update, all accumulated gigabytes of
-        // stale cache are immediately purged!
+        roseNGLog.i(TAG) { "Rose ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE}) starting, verbose=${roseNGLog.verbose}" }
+        roseNGLog.timed(TAG, "Shizuku initialisation") {
+            ShizukuManager.init(this)
+        }
+        dev.narayan.rose.data.index.FileNameIndex.init(this)
+        roseNGLog.heap(TAG, "After application onCreate")
         CoroutineScope(Dispatchers.IO).launch {
-            CacheCleaner.cleanAllCache(this@RoseApplication)
+            roseNGLog.timed(TAG, "Startup cache cleanup") {
+                CacheCleaner.cleanAllCache(this@RoseApplication)
+            }
         }
     }
 
@@ -31,10 +35,14 @@ class RoseApplication : Application(), ImageLoaderFactory {
             .diskCache {
                 DiskCache.Builder()
                     .directory(File(cacheDir, "image_cache"))
-                    .maxSizeBytes(25L * 1024L * 1024L) // 25MB maximum disk cache
+                    .maxSizeBytes(25L * 1024L * 1024L)
                     .build()
             }
             .crossfade(true)
             .build()
+    }
+
+    private companion object {
+        const val TAG = "App"
     }
 }

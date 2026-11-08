@@ -1,25 +1,13 @@
 package dev.narayan.rose.filejob
 
 import android.content.Context
+import dev.narayan.rose.ui.icons.AppIcons
 import androidx.annotation.StringRes
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.ContentCopy
-import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.DeleteSweep
-import androidx.compose.material.icons.filled.Download
-import androidx.compose.material.icons.filled.DriveFileMove
-import androidx.compose.material.icons.filled.FolderZip
-import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
-import androidx.compose.material.icons.filled.RestoreFromTrash
-import androidx.compose.material.icons.filled.Schedule
-import androidx.compose.material.icons.filled.Speed
-import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -38,14 +26,6 @@ import androidx.compose.ui.window.DialogProperties
 import dev.narayan.rose.R
 import kotlinx.coroutines.delay
 
-/**
- * Rich, detailed progress dialog for in-flight copy/move/delete/extract/etc
- * jobs. Shows source, destination, live progress, speed, ETA and elapsed
- * time, with a Cancel button that actually stops the underlying job
- * (see JobManager.cancelJob - the old version silently no-op'd).
- *
- * Shown from FileExplorerScreen whenever JobManager.activeJobs is non-empty.
- */
 @Composable
 fun FileJobProgressDialog(activeJobs: List<FileJob>, onDismissRequest: () -> Unit) {
     if (activeJobs.isEmpty()) return
@@ -81,7 +61,7 @@ fun FileJobProgressDialog(activeJobs: List<FileJob>, onDismissRequest: () -> Uni
                     )
                     IconButton(onClick = onDismissRequest) {
                         Icon(
-                            imageVector = Icons.Filled.Close,
+                            imageVector = AppIcons.Close,
                             contentDescription = stringResource(R.string.action_hide),
                             tint = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -163,13 +143,6 @@ fun FileJobProgressDialog(activeJobs: List<FileJob>, onDismissRequest: () -> Uni
 
 @Composable
 private fun JobDetailCard(job: FileJob, onCancel: () -> Unit) {
-    // The composable re-runs on every JobManager update (as often as every
-    // 150ms during a fast transfer), but speed/ETA are only recalculated on
-    // a fixed 500ms sample tick below - reading job.processedBytes straight
-    // off a per-recomposition value made the speed number visibly jitter
-    // several times a second instead of settling into a readable figure.
-    // rememberUpdatedState lets the long-lived sampling loop always see the
-    // latest job without being restarted or driven by every recomposition.
     val latestJob by rememberUpdatedState(job)
 
     var now by remember(job.id) { mutableLongStateOf(System.currentTimeMillis()) }
@@ -191,9 +164,6 @@ private fun JobDetailCard(job: FileJob, onCancel: () -> Unit) {
             val dtSec = (nowMs - lastSampleTime) / 1000.0
             if (dtSec > 0.05) {
                 val instantSpeed = (sampleBytes - lastSampleBytes).coerceAtLeast(0L) / dtSec
-                // Exponential moving average over the 250ms samples - smooths
-                // out the burst/pause pattern of real disk & network I/O into
-                // a steadily-updating number with rapid initial display.
                 smoothedSpeedBps = if (smoothedSpeedBps <= 0.0) instantSpeed
                 else (smoothedSpeedBps * 0.6 + instantSpeed * 0.4)
             }
@@ -205,16 +175,12 @@ private fun JobDetailCard(job: FileJob, onCancel: () -> Unit) {
 
     val context = LocalContext.current
     val paths = remember(job.type) { jobPaths(job, context) }
-    val (icon, titleRes) = remember(job.type) { jobIconAndTitle(job) }
+    val (icon, titleRes) = jobIconAndTitle(job)
 
     val elapsedSec = ((now - job.startTime).coerceAtLeast(0L)) / 1000.0
     val remainingBytes = (job.totalBytes - job.processedBytes).coerceAtLeast(0L)
     val etaSec = if (smoothedSpeedBps >= 1.0 && job.totalBytes > 0) remainingBytes / smoothedSpeedBps else null
 
-    // Progress bar reflects job.progress directly, with no extra tween on top
-    // of it - the underlying byte-driven updates already arrive smoothly
-    // (every 150ms/512KB), so an added animation only introduced visible lag
-    // and a wobble whenever a fast update landed mid-animation.
     val currentProgress = job.progress.coerceIn(0f, 1f)
 
     Surface(
@@ -225,7 +191,6 @@ private fun JobDetailCard(job: FileJob, onCancel: () -> Unit) {
     ) {
         Column(modifier = Modifier.padding(18.dp)) {
 
-            // -- Header: icon badge + title + item count -----------------
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(
                     modifier = Modifier
@@ -277,7 +242,6 @@ private fun JobDetailCard(job: FileJob, onCancel: () -> Unit) {
 
             Spacer(modifier = Modifier.height(14.dp))
 
-            // -- From / To --------------------------------------------------
             if (paths.from != null) {
                 PathRow(label = stringResource(R.string.job_label_from), value = paths.from)
             }
@@ -290,7 +254,7 @@ private fun JobDetailCard(job: FileJob, onCancel: () -> Unit) {
                 Spacer(modifier = Modifier.height(10.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(
-                        imageVector = Icons.AutoMirrored.Filled.InsertDriveFile,
+                        imageVector = AppIcons.InsertDriveFile,
                         contentDescription = null,
                         modifier = Modifier.size(14.dp),
                         tint = MaterialTheme.colorScheme.onSurfaceVariant
@@ -308,7 +272,6 @@ private fun JobDetailCard(job: FileJob, onCancel: () -> Unit) {
 
             Spacer(modifier = Modifier.height(16.dp))
 
-            // -- Progress bar -------------------------------------------
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -357,26 +320,25 @@ private fun JobDetailCard(job: FileJob, onCancel: () -> Unit) {
 
             Spacer(modifier = Modifier.height(14.dp))
 
-            // -- Stats: speed / time left / elapsed ----------------------
             Row(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 StatChip(
                     modifier = Modifier.weight(1f),
-                    icon = Icons.Filled.Speed,
+                    icon = AppIcons.Speed,
                     label = stringResource(R.string.job_stat_speed),
                     value = if (latestJob.isPaused) stringResource(R.string.job_status_paused) else if (smoothedSpeedBps >= 1.0) formatSpeed(smoothedSpeedBps) else "—"
                 )
                 StatChip(
                     modifier = Modifier.weight(1f),
-                    icon = Icons.Filled.Timer,
+                    icon = AppIcons.Timer,
                     label = stringResource(R.string.job_stat_left),
                     value = etaSec?.let { formatDuration(it) } ?: "—"
                 )
                 StatChip(
                     modifier = Modifier.weight(1f),
-                    icon = Icons.Filled.Schedule,
+                    icon = AppIcons.Schedule,
                     label = stringResource(R.string.job_stat_elapsed),
                     value = formatDuration(elapsedSec)
                 )
@@ -384,7 +346,6 @@ private fun JobDetailCard(job: FileJob, onCancel: () -> Unit) {
 
             Spacer(modifier = Modifier.height(16.dp))
 
-            // -- Cancel ----------------------------------------------------
             FilledTonalButton(
                 onClick = onCancel,
                 modifier = Modifier.fillMaxWidth(),
@@ -394,7 +355,7 @@ private fun JobDetailCard(job: FileJob, onCancel: () -> Unit) {
                 ),
                 shape = RoundedCornerShape(16.dp)
             ) {
-                Icon(imageVector = Icons.Filled.Close, contentDescription = null, modifier = Modifier.size(18.dp))
+                Icon(imageVector = AppIcons.Close, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(stringResource(R.string.action_cancel), fontWeight = FontWeight.SemiBold)
             }
@@ -444,17 +405,8 @@ private fun StatChip(modifier: Modifier = Modifier, icon: ImageVector, label: St
     }
 }
 
-// -- helpers ---------------------------------------------------------------
-
 private data class JobPaths(val from: String?, val to: String?)
 
-/**
- * Real source folder path shared by a batch of items - not a filename and not
- * a bare "N items" label. When a multi-select comes from one folder (the
- * normal case), this is that folder's full path. If sources happen to come
- * from different folders, falls back to naming how many distinct locations
- * are involved rather than guessing one.
- */
 private fun sourceFolderPath(sourcePaths: List<String>, context: Context): String? {
     val parents = sourcePaths.mapNotNull { java.io.File(it).parent }.distinct()
     return when {
@@ -515,15 +467,16 @@ private fun jobPaths(job: FileJob, context: Context): JobPaths = when (val type 
     )
 }
 
+@Composable
 private fun jobIconAndTitle(job: FileJob): Pair<ImageVector, Int> = when (job.type) {
-    is FileJobType.Copy -> Icons.Filled.ContentCopy to R.string.job_title_copying
-    is FileJobType.Move -> Icons.Filled.DriveFileMove to R.string.job_title_moving
-    is FileJobType.Delete -> Icons.Filled.Delete to R.string.job_title_deleting
-    is FileJobType.Download -> Icons.Filled.Download to R.string.job_title_saving_offline
-    is FileJobType.Recycle -> Icons.Filled.DeleteSweep to R.string.job_title_moving_to_recycle_bin
-    is FileJobType.Restore -> Icons.Filled.RestoreFromTrash to R.string.job_title_restoring
-    is FileJobType.Extract -> Icons.Filled.FolderZip to R.string.job_title_extracting
-    is FileJobType.Compress -> Icons.Filled.FolderZip to R.string.job_title_creating_archive
+    is FileJobType.Copy -> AppIcons.ContentCopy to R.string.job_title_copying
+    is FileJobType.Move -> AppIcons.DriveFileMove to R.string.job_title_moving
+    is FileJobType.Delete -> AppIcons.Delete to R.string.job_title_deleting
+    is FileJobType.Download -> AppIcons.Download to R.string.job_title_saving_offline
+    is FileJobType.Recycle -> AppIcons.DeleteSweep to R.string.job_title_moving_to_recycle_bin
+    is FileJobType.Restore -> AppIcons.RestoreFromTrash to R.string.job_title_restoring
+    is FileJobType.Extract -> AppIcons.FolderZip to R.string.job_title_extracting
+    is FileJobType.Compress -> AppIcons.FolderZip to R.string.job_title_creating_archive
 }
 
 private fun formatBytes(bytes: Long): String {

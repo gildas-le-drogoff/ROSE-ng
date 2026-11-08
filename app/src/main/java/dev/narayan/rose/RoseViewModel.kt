@@ -1,155 +1,54 @@
 package dev.narayan.rose
 
-import android.app.Application
-import android.content.Intent
-import android.net.Uri
-import android.os.Build
-import android.os.Environment
-import android.os.StatFs
-import android.provider.DocumentsContract
-import android.provider.MediaStore
-import android.provider.Settings
-import android.webkit.MimeTypeMap
 import androidx.compose.runtime.*
-import androidx.compose.ui.unit.Dp
-import androidx.compose.ui.unit.dp
-import androidx.core.content.FileProvider
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import android.app.Application
+import android.net.Uri
+import android.os.Environment
+import android.provider.DocumentsContract
+import android.provider.MediaStore
+import android.webkit.MimeTypeMap
+import dev.narayan.rose.data.DirectoryWatcher
+import dev.narayan.rose.data.RecentFilesCache
+import dev.narayan.rose.data.repository.AndroidMediaStoreRepository
+import dev.narayan.rose.data.repository.DefaultFileRepository
+import dev.narayan.rose.data.rescanForMediaStore
+import dev.narayan.rose.data.settings.SettingsManager
+import dev.narayan.rose.domain.model.DirectoryListing
+import dev.narayan.rose.domain.model.FileItem
+import dev.narayan.rose.domain.model.FileType
+import dev.narayan.rose.domain.model.StartPage
+import dev.narayan.rose.domain.model.ThemeMode
+import dev.narayan.rose.domain.repository.FileRepository
+import dev.narayan.rose.domain.repository.MediaStoreRepository
+import dev.narayan.rose.domain.repository.SettingsRepository
 import dev.narayan.rose.filejob.JobManager
-import dev.narayan.rose.update.ApkSelector
-import dev.narayan.rose.update.SemanticVersion
-import dev.narayan.rose.update.UpdatePreferences
-import kotlinx.coroutines.*
-import kotlinx.coroutines.flow.StateFlow
-import org.json.JSONArray
-import org.json.JSONObject
+import dev.narayan.rose.update.UpdateController
+import dev.narayan.rose.viewmodel.CategoryController
+import dev.narayan.rose.viewmodel.CategoryHost
+import dev.narayan.rose.viewmodel.FavouritesController
+import dev.narayan.rose.viewmodel.RecycleBinController
+import dev.narayan.rose.viewmodel.SearchController
+import dev.narayan.rose.viewmodel.StorageController
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
-import java.net.HttpURLConnection
-import java.net.URL
-import java.util.zip.ZipEntry as JavaZipEntry
-import java.util.zip.ZipOutputStream
+import kotlinx.coroutines.*
 
-enum class GridItemSize(val cellMinSize: Dp, val iconSize: Dp) {
-    SMALL(84.dp, 48.dp),
-    MEDIUM(110.dp, 64.dp),
-    LARGE(150.dp, 88.dp)
-}
+private const val TAG = "RoseViewModel"
 
-// Every "Recent files" and category (Archives, Documents, ...) listing in this
-// app is powered by a MediaStore query. MediaStore only learns about a file
-// through its own scanner - it does NOT automatically notice files this app
-// writes directly with java.io (ZipOutputStream, File.renameTo, raw copies,
-// etc). Without an explicit rescan, a freshly-zipped archive or a renamed/
-// moved file stays invisible to Recent/Archives, sometimes for hours, no
-// matter how many times the user pulls to refresh - the query itself is
-// working fine, it's just querying a database that was never told the file
-// exists. Call this right after any operation that creates, modifies, moves,
-// renames or deletes a real file on disk.
-fun rescanForMediaStore(context: android.content.Context, vararg files: File) {
-    if (files.isEmpty()) return
-    android.media.MediaScannerConnection.scanFile(
-        context,
-        files.map { it.absolutePath }.toTypedArray(),
-        null,
-        null
-    )
-}
+private val FULL_REFRESH: Set<String> = java.util.Collections.unmodifiableSet(HashSet())
 
-// Directory names that are never useful to walk into: heavy app-private
-// caches Android hides behind a permission wall anyway (Android/data,
-// Android/obb), thumbnail caches, and trash folders other apps leave
-// behind. Combined with skipping any name starting with "." (hidden
-// dot-folders, including this app's own .thumbnails-style caches), this
-// keeps the fallback filesystem walk below fast and bounded instead of
-// crawling gigabytes of stuff no one is looking for.
-private val fsScanJunkDirNames = setOf(".thumbnails", ".trashed", ".Trash", "LOST.DIR", "\$RECYCLE.BIN", "cache", ".cache")
-private const val FS_SCAN_MAX_DIRS = 20000
-
-private fun fsScanShouldSkipDir(dir: File): Boolean {
-    val name = dir.name
-    if (name.startsWith(".")) return true
-    if (name in fsScanJunkDirNames) return true
-    val parentName = dir.parentFile?.name
-    if (parentName == "Android" && (name == "data" || name == "obb")) return true
-    return false
-}
-
-/**
- * MediaStore only knows about a file once its own scanner has actually seen
- * it - a zip copied in from a computer, placed by another file manager, or
- * saved by an app that never triggers a scan can sit invisible to any
- * MediaStore-only listing (Archives, search) indefinitely. This walks the
- * real filesystem as a completeness fallback, skipping hidden and junk/
- * system folders so it stays fast, and is meant to be merged with - not
- * replace - the fast MediaStore query.
- */
-fun scanFilesystemForExtensions(
-    extensions: Set<String>,
-    root: File = Environment.getExternalStorageDirectory(),
-    maxResults: Int = 500
-): List<File> {
-    val results = mutableListOf<File>()
-    val stack = ArrayDeque<File>()
-    stack.addLast(root)
-    var dirsVisited = 0
-    while (stack.isNotEmpty() && results.size < maxResults && dirsVisited < FS_SCAN_MAX_DIRS) {
-        val dir = stack.removeLast()
-        dirsVisited++
-        val children = try { dir.listFiles() } catch (e: Exception) { null } ?: continue
-        for (child in children) {
-            if (results.size >= maxResults) break
-            if (child.isDirectory) {
-                if (!fsScanShouldSkipDir(child)) stack.addLast(child)
-            } else {
-                val ext = child.name.substringAfterLast('.', "").lowercase()
-                if (ext in extensions) results.add(child)
-            }
-        }
-    }
-    return results
-}
-
-/** Same fallback walk as [scanFilesystemForExtensions], matching by filename and optional category filter. */
-fun scanFilesystemForQuery(query: String, root: File, filterType: FileType? = null, maxResults: Int = 100): List<File> {
-    val results = mutableListOf<File>()
-    val stack = ArrayDeque<File>()
-    stack.addLast(root)
-    val lowerQuery = query.lowercase()
-    var dirsVisited = 0
-    while (stack.isNotEmpty() && results.size < maxResults && dirsVisited < FS_SCAN_MAX_DIRS) {
-        val dir = stack.removeLast()
-        dirsVisited++
-        val children = try { dir.listFiles() } catch (e: Exception) { null } ?: continue
-        for (child in children) {
-            if (results.size >= maxResults) break
-            if (child.isDirectory) {
-                if (filterType == null && child.name.lowercase().contains(lowerQuery)) {
-                    results.add(child)
-                }
-                if (!fsScanShouldSkipDir(child)) stack.addLast(child)
-            } else if (child.name.lowercase().contains(lowerQuery)) {
-                if (filterType == null || FileItem(child).matchesCategory(filterType)) {
-                    results.add(child)
-                }
-            }
-        }
-    }
-    return results
-}
+private const val LISTING_CACHE_FRESH_MS = 10_000L
 
 class RoseViewModel(application: Application) : AndroidViewModel(application) {
 
-    private val settings = SettingsManager(application)
-    val updatePreferences = UpdatePreferences(application)
+    private val settings: SettingsRepository = SettingsManager(application)
+    private val fileRepository: FileRepository = DefaultFileRepository(application)
+    private val mediaStoreRepository: MediaStoreRepository = AndroidMediaStoreRepository(application)
 
-    private val _autoCheckUpdates = mutableStateOf(settings.autoCheckUpdates)
-    val autoCheckUpdates: Boolean by _autoCheckUpdates
-
-    private val _skippedVersion = mutableStateOf(settings.skippedUpdateVersion)
-    val skippedVersion: String? by _skippedVersion
+    val updates = UpdateController(application, viewModelScope, settings)
 
     var currentPath by mutableStateOf(Environment.getExternalStorageDirectory().absolutePath)
         private set
@@ -157,79 +56,35 @@ class RoseViewModel(application: Application) : AndroidViewModel(application) {
     var files by mutableStateOf(listOf<FileItem>())
         private set
 
-    // Deliberately separate from `files`. Category browsing used to write its
-    // MediaStore results straight into `files` - the same state "All Files"
-    // reads from. Since loadFiles() intentionally keeps old content on screen
-    // until new data is ready (to avoid a blank flash), exiting a category
-    // back to "All Files" would show the leftover category results for a
-    // moment before the real folder listing replaced them. Giving Category
-    // its own state makes that cross-contamination impossible.
-    var categoryFiles by mutableStateOf(listOf<FileItem>())
-        private set
-
-    private val recentFilesCacheFile: File by lazy {
-        File(getApplication<Application>().filesDir, "recent_files_cache.json")
-    }
-
-    private fun loadCachedRecentFiles(): List<FileItem> {
-        return try {
-            if (!recentFilesCacheFile.exists()) return emptyList()
-            val text = recentFilesCacheFile.readText()
-            if (text.isBlank()) return emptyList()
-            val array = JSONArray(text)
-            val list = mutableListOf<FileItem>()
-            for (i in 0 until array.length()) {
-                val obj = array.getJSONObject(i)
-                val path = obj.getString("path")
-                val file = File(path)
-                if (file.exists() && file.isFile) {
-                    val name = obj.optString("name", file.name)
-                    val size = obj.optLong("size", file.length())
-                    val lastModified = obj.optLong("lastModified", file.lastModified())
-                    val mimeType = if (obj.has("mimeType") && !obj.isNull("mimeType")) obj.getString("mimeType") else null
-                    list.add(
-                        FileItem(
-                            file = file,
-                            isDirectory = false,
-                            name = name,
-                            size = size,
-                            lastModified = lastModified,
-                            extension = file.extension.lowercase(),
-                            mimeType = mimeType
-                        )
-                    )
-                }
-            }
-            list
-        } catch (e: Exception) {
-            emptyList()
+    val categories = CategoryController(viewModelScope, settings, mediaStoreRepository, object : CategoryHost {
+        override val excludedFolders: Set<String> get() = this@RoseViewModel.excludedFolders
+        override val suppressRefreshUntil: Long get() = suppressSilentRefreshUntil
+        override fun sort(list: List<FileItem>) = sortFileList(list)
+        override fun onEnterCategory(forceRefresh: Boolean) {
+            stopWatchingDirectory()
+            accessDenied = false
+            currentZipFile = null
+            currentZipEntryPath = ""
+            currentPath = ""
+            if (!forceRefresh) isRefreshing = false
         }
-    }
-
-    fun saveCachedRecentFiles(items: List<FileItem>) {
-        try {
-            val array = JSONArray()
-            for (item in items.take(20)) {
-                val obj = JSONObject().apply {
-                    put("path", item.file.absolutePath)
-                    put("name", item.name)
-                    put("size", item.size)
-                    put("lastModified", item.lastModified)
-                    if (item.mimeType != null) {
-                        put("mimeType", item.mimeType)
-                    }
-                }
-                array.put(obj)
-            }
-            val tempFile = File(getApplication<Application>().filesDir, "recent_files_cache.tmp")
-            tempFile.writeText(array.toString())
-            tempFile.renameTo(recentFilesCacheFile)
-        } catch (e: Exception) {
-            // Ignore cache write errors
+        override fun onExitCategory() {
+            isRefreshing = false
+            currentPath = Environment.getExternalStorageDirectory().absolutePath
         }
-    }
+        override fun setRefreshing(refreshing: Boolean) {
+            isRefreshing = refreshing
+        }
+        override fun onCategoryError(message: String) {
+            errorMessage = message
+        }
+    })
 
-    var recentFiles by mutableStateOf(loadCachedRecentFiles())
+    private val recentFilesCache = RecentFilesCache(application)
+
+    fun saveCachedRecentFiles(items: List<FileItem>) = recentFilesCache.save(items)
+
+    var recentFiles by mutableStateOf(recentFilesCache.load())
         private set
 
     var lastSwipeToHomeTimestamp by mutableLongStateOf(0L)
@@ -251,11 +106,13 @@ class RoseViewModel(application: Application) : AndroidViewModel(application) {
     var selectedFiles = mutableStateListOf<FileItem>()
         private set
 
+    private val selectedSet by derivedStateOf { selectedFiles.toHashSet() }
+
+    fun isSelected(item: FileItem?): Boolean = item != null && item in selectedSet
+
     var isSelectionMode by mutableStateOf(false)
         private set
 
-    // View & display preferences: persisted through SettingsManager so they
-    // survive process death / app restarts.
     private val _isGridView = mutableStateOf(settings.isGridView)
     val isGridView: Boolean by _isGridView
 
@@ -289,7 +146,7 @@ class RoseViewModel(application: Application) : AndroidViewModel(application) {
     fun setUseRoot(enabled: Boolean) {
         _useRoot.value = enabled
         settings.useRoot = enabled
-        loadStorageDevices()
+        storage.loadStorageDevices()
     }
 
     private val _recentFilesLimit = mutableStateOf(settings.recentFilesLimit)
@@ -306,10 +163,8 @@ class RoseViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setExcludedFolders(folders: Set<String>) {
         val rootPath = Environment.getExternalStorageDirectory().absolutePath
-        // Filter out root storage and normalize
         val filteredFolders = folders.filter { it != rootPath }.toMutableSet()
 
-        // Remove redundant subfolders
         val finalFolders = mutableSetOf<String>()
         val sorted = filteredFolders.sortedBy { it.length }
         for (path in sorted) {
@@ -321,13 +176,8 @@ class RoseViewModel(application: Application) : AndroidViewModel(application) {
         _excludedFolders.value = finalFolders
         settings.excludedFolders = finalFolders
         loadRecentFiles()
-        loadCategoryCounts(force = true)
-        val title = categoryTitle
-        categoryFilterType?.let { type ->
-            if (title != null) {
-                browseCategory(type, title, categoryBucketId)
-            }
-        }
+        categories.loadCategoryCounts(force = true)
+        categories.reloadCurrent()
     }
 
     private val _useShizuku = mutableStateOf(settings.useShizuku)
@@ -360,70 +210,7 @@ class RoseViewModel(application: Application) : AndroidViewModel(application) {
     private var _quickAccessExpanded = mutableStateOf(settings.quickAccessExpanded)
     val quickAccessExpanded: Boolean by _quickAccessExpanded
 
-    var quickAccessRemoved by mutableStateOf(settings.quickAccessRemoved)
-        private set
-
-    var quickAccessCustomPaths by mutableStateOf(settings.quickAccessCustomPaths)
-        private set
-
-    var favouriteFiles by mutableStateOf(settings.favouriteFiles)
-        private set
-
-    fun normalizePath(path: String): String {
-        return try {
-            File(path).canonicalPath
-        } catch (_: Exception) {
-            File(path).absolutePath.trimEnd(File.separatorChar)
-        }
-    }
-
-    /**
-     * Resolves default quick access folders: downloads, camera, documents.
-     */
-    fun getDefaultQuickAccessFolders(): List<Pair<String, String>> {
-        val list = mutableListOf<Pair<String, String>>()
-        val downloads = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-        if (downloads.exists()) {
-            list.add("downloads" to downloads.absolutePath)
-        }
-        val dcim = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM)
-        val camera = File(dcim, "Camera")
-        val targetCamera = if (camera.exists()) camera else dcim
-        if (targetCamera.exists()) {
-            list.add("camera" to targetCamera.absolutePath)
-        }
-        val documents = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS)
-        if (documents.exists()) {
-            list.add("documents" to documents.absolutePath)
-        }
-        return list
-    }
-
-    fun getDefaultFolderIdForPath(path: String): String? {
-        val normalized = normalizePath(path)
-        for ((id, defaultPath) in getDefaultQuickAccessFolders()) {
-            if (normalizePath(defaultPath) == normalized) {
-                return id
-            }
-        }
-        return null
-    }
-
-    fun isFolderInQuickAccess(path: String): Boolean {
-        if (path.isBlank()) return false
-        val normalized = normalizePath(path)
-        for ((id, defaultPath) in getDefaultQuickAccessFolders()) {
-            if (!quickAccessRemoved.contains(id) && normalizePath(defaultPath) == normalized) {
-                return true
-            }
-        }
-        for (customPath in quickAccessCustomPaths) {
-            if (normalizePath(customPath) == normalized) {
-                return true
-            }
-        }
-        return false
-    }
+    val favourites = FavouritesController(settings)
 
     private var _externalStorageExpanded = mutableStateOf(settings.externalStorageExpanded)
     val externalStorageExpanded: Boolean by _externalStorageExpanded
@@ -433,7 +220,6 @@ class RoseViewModel(application: Application) : AndroidViewModel(application) {
     )
     val gridItemSize: GridItemSize by _gridItemSize
 
-    // Theme preferences - also persisted.
     private val _themeMode = mutableStateOf(settings.themeMode)
     val themeMode: ThemeMode by _themeMode
 
@@ -458,7 +244,7 @@ class RoseViewModel(application: Application) : AndroidViewModel(application) {
     var extractionEntries by mutableStateOf<List<String>?>(null)
         private set
 
-    var isCopyOperation by mutableStateOf(true) // true for copy, false for move
+    var isCopyOperation by mutableStateOf(true)
         private set
 
     var passphrasePromptItem by mutableStateOf<FileItem?>(null)
@@ -498,37 +284,29 @@ class RoseViewModel(application: Application) : AndroidViewModel(application) {
             lastDeniedSafPath = path
         } else {
             lastDeniedSafPath = null
-            // Use showLoading = false to avoid UI jump if we are already in the folder
             loadFiles(path, showLoading = path != currentPath)
         }
     }
 
-    fun isShizukuRestrictedPath(path: String): Boolean {
-        if (SafManager.isSafUri(path)) return false
-        val lowPath = try { File(path).canonicalPath.lowercase() } catch (e: Exception) { path.lowercase() }
-        return lowPath.endsWith("/android/data") || lowPath.contains("/android/data/") ||
-                lowPath.endsWith("/android/obb") || lowPath.contains("/android/obb/")
-    }
+    fun isShizukuRestrictedPath(path: String): Boolean = fileRepository.isRestrictedPath(path)
 
-    fun isRemotePath(path: String?): Boolean {
-        if (path.isNullOrBlank()) return false
-        val lower = path.lowercase().trim()
-        val schemes = listOf("mega", "onedrive", "gdrive", "dropbox", "smb", "ftp", "ftps", "sftp", "webdav", "webdavs")
-        return schemes.any { scheme ->
-            lower.startsWith("$scheme://") || lower.startsWith("$scheme:/")
-        }
-    }
+    fun isRemotePath(path: String?): Boolean = fileRepository.isRemotePath(path)
 
     private val directoryCache = java.util.concurrent.ConcurrentHashMap<String, Pair<Long, List<FileItem>>>()
+
+    private val listingCache = dev.narayan.rose.data.cache.DirectoryListingCache()
 
     fun invalidateDirectoryCache(path: String? = null) {
         if (path == null) {
             directoryCache.clear()
+            listingCache.invalidate()
         } else {
             val norm = ShizukuManager.normalize(path)
             directoryCache.remove(norm)
             File(norm).parent?.let { directoryCache.remove(ShizukuManager.normalize(it)) }
+            listingCache.invalidate(norm)
         }
+        dev.narayan.rose.data.index.FileNameIndex.markStale()
     }
 
     fun onShizukuResult(granted: Boolean, path: String) {
@@ -576,120 +354,20 @@ class RoseViewModel(application: Application) : AndroidViewModel(application) {
         operationFailureReport = null
     }
 
-    var storageInfo by mutableStateOf<StorageInfo?>(null)
-        private set
-
-    var recycleBinItems by mutableStateOf<List<RecycledItem>>(emptyList())
-        private set
-
-    // Guards the periodic poll (see RecycleBinScreen) from re-fetching disk
-    // state and clobbering the optimistic removal animation while a bulk
-    // delete/restore/empty operation is in flight. Without this, the poll
-    // could briefly resurrect items mid-animation (since the physical file
-    // op hadn't finished yet), then wipe them again once it did - the
-    // "quickly removes, shows some back, then vanishes" glitch.
-    private var recycleBinBulkOperationActive = false
-
-    fun loadRecycleBin() {
-        if (recycleBinBulkOperationActive) return
-        viewModelScope.launch(Dispatchers.IO) {
-            val items = RecycleBinManager.listItems(getApplication())
-            withContext(Dispatchers.Main) {
-                if (!recycleBinBulkOperationActive) {
-                    recycleBinItems = items
-                }
-            }
-        }
-    }
-
-    fun deleteRecycleBinItemPermanently(item: RecycledItem) {
-        // Optimistic removal for smooth animation
-        recycleBinItems = recycleBinItems.filter { it.id != item.id }
-
-        viewModelScope.launch(Dispatchers.IO) {
-            RecycleBinManager.deletePermanently(getApplication(), item)
-        }
-    }
-
-    fun deleteRecycleBinItemsPermanently(items: Set<RecycledItem>) {
-        recycleBinBulkOperationActive = true
-        viewModelScope.launch(Dispatchers.Main) {
-            val toDelete = items.toList()
-            toDelete.forEach { item ->
-                // Physical deletion happens one by one with real feedback.
-                // We wait for each one to finish before removing it from the UI,
-                // so the "reappearing" glitch is physically impossible.
-                withContext(Dispatchers.IO) {
-                    RecycleBinManager.deletePermanently(getApplication(), item)
-                }
-                recycleBinItems = recycleBinItems.filter { it.id != item.id }
-                delay(10) // Small delay for visual separation
-            }
-            recycleBinBulkOperationActive = false
-        }
-    }
-
-    fun emptyRecycleBinPermanently() {
-        recycleBinBulkOperationActive = true
-        viewModelScope.launch(Dispatchers.Main) {
-            val toDelete = recycleBinItems.toList()
-            toDelete.forEach { item ->
-                withContext(Dispatchers.IO) {
-                    RecycleBinManager.deletePermanently(getApplication(), item)
-                }
-                recycleBinItems = recycleBinItems.filter { it.id != item.id }
-                delay(10)
-            }
-            recycleBinBulkOperationActive = false
-        }
-    }
-
-    fun restoreRecycleBinItems(context: android.content.Context, items: Set<RecycledItem>) {
-        if (items.isEmpty()) return
-        val ids = items.map { it.id }.toSet()
-        val names = items.map { it.originalName }
-        recycleBinBulkOperationActive = true
-
-        // Optimistic removal gives instant visual feedback with live item animation in RecycleBinScreen
-        recycleBinItems = recycleBinItems.filter { it.id !in ids }
-
-        dev.narayan.rose.filejob.FileJobService.startRestore(context, ids.toList(), names)
-
-        // Safety watchdog: ensures bulk operation guard is cleared even if the job fails unexpectedly
-        viewModelScope.launch {
-            delay(120_000)
-            if (recycleBinBulkOperationActive) {
-                recycleBinBulkOperationActive = false
-                loadRecycleBin()
-            }
-        }
-    }
-
-    data class StorageInfo(
-        val totalBytes: Long,
-        val availableBytes: Long,
-        val usedBytes: Long,
-        val usedFraction: Float
+    val storage = StorageController(
+        app = application,
+        scope = viewModelScope,
+        settings = settings,
+        isRootEnabled = { useRoot },
+        currentPath = { currentPath },
+        navigateTo = { path ->
+            currentPath = path
+            loadFiles(path)
+        },
+        onStorageInfoRequested = { registerMediaObserver() }
     )
 
-    fun loadStorageInfo() {
-        registerMediaObserver()
-        viewModelScope.launch(Dispatchers.IO) {
-            try {
-                val stats = StatFs(Environment.getExternalStorageDirectory().path)
-                val total = stats.totalBytes
-                val available = stats.availableBytes
-                val used = (total - available).coerceAtLeast(0)
-                val fraction = if (total > 0) used.toFloat() / total.toFloat() else 0f
-
-                withContext(Dispatchers.Main) {
-                    storageInfo = StorageInfo(total, available, used, fraction)
-                }
-            } catch (e: Exception) {
-                // Ignore or log error
-            }
-        }
-    }
+    val recycleBin = RecycleBinController(application, viewModelScope)
 
     var folderSize by mutableStateOf<Long?>(null)
         private set
@@ -718,129 +396,34 @@ class RoseViewModel(application: Application) : AndroidViewModel(application) {
         folderSize = null
     }
 
-    @Suppress("NewApi")
     private fun calculateFolderSize(directory: File): Long {
-        val path = directory.absolutePath
-        if (isShizukuRestrictedPath(path)) {
-            if (ShizukuManager.isAvailable() && ShizukuManager.hasPermission()) {
-                val size = ShizukuManager.getFolderSize(path)
-                if (size > 0L) return size
-            }
-            return 0L
+        val size: Long = roseNGLog.timed(TAG, "folderSize ${directory.absolutePath}", { bytes: Long -> "$bytes bytes" }) {
+            fileRepository.folderSize(directory, useRoot)
         }
-        if (useRoot && RootManager.isRootAvailable() && RootManager.isRootPath(path)) {
-            val size = RootManager.getFolderSize(path)
-            if (size > 0L) return size
-        }
-        if (SafManager.isSafUri(path)) {
-            fun scanSaf(p: String): Long {
-                var sum = 0L
-                val items = SafManager.listFiles(getApplication(), p)
-                for (item in items) {
-                    if (item.isDirectory) {
-                        sum += scanSaf(item.file.absolutePath)
-                    } else {
-                        sum += item.size
-                    }
-                }
-                return sum
-            }
-            return try { scanSaf(path) } catch (_: Exception) { 0L }
-        }
-        var totalSize = 0L
-        try {
-            val p = java.nio.file.Paths.get(path)
-            java.nio.file.Files.walkFileTree(p, object : java.nio.file.SimpleFileVisitor<java.nio.file.Path>() {
-                override fun visitFile(file: java.nio.file.Path, attrs: java.nio.file.attribute.BasicFileAttributes): java.nio.file.FileVisitResult {
-                    if (attrs.isRegularFile) {
-                        totalSize += attrs.size()
-                    }
-                    return java.nio.file.FileVisitResult.CONTINUE
-                }
-
-                override fun visitFileFailed(file: java.nio.file.Path, exc: java.io.IOException?): java.nio.file.FileVisitResult {
-                    return java.nio.file.FileVisitResult.CONTINUE
-                }
-            })
-            return totalSize
-        } catch (_: Exception) {}
-
-        // Fallback: scan via File.listFiles if NIO walk fails
-        fun scanDir(f: File) {
-            val children = f.listFiles() ?: return
-            for (child in children) {
-                if (child.isFile) {
-                    totalSize += child.length()
-                } else if (child.isDirectory) {
-                    scanDir(child)
-                }
-            }
-        }
-        scanDir(directory)
-        return totalSize
+        return size
     }
 
     var currentZipFile by mutableStateOf<File?>(null)
     var cachedZipPassword by mutableStateOf<String?>(null)
     var currentZipSourcePath by mutableStateOf<String?>(null)
-    // Virtual directory path within the open zip ("" = root). Lets folders
-    // inside an archive be browsed without re-reading the zip each time.
     var currentZipEntryPath by mutableStateOf("")
     private var zipEntriesCache: List<RoseArchiveEntry> = emptyList()
 
     var isLoading by mutableStateOf(false)
     var isRefreshing by mutableStateOf(false)
 
-    // Set whenever one of our own file jobs (delete/recycle/move/etc.) just
-    // affected the currently-open folder. While inside this window, the
-    // FileObserver/poll-driven silentRefresh() below is skipped: our own
-    // optimistic removal (see the `affectedPaths` handling in init{}) already
-    // updated `files` precisely, and LazyColumn's item-removal animation
-    // (Modifier.animateItem()) is currently playing for that removal. A
-    // silentRefresh landing mid-animation replaces the whole `files` list at
-    // once, which cancels/derails that in-flight animation - this is what
-    // caused deletes after the first one in a session to "scramble" instead
-    // of sliding out smoothly. The watcher fires again on its own very
-    // shortly after (every 400ms/1s), so this only delays a live-refresh
-    // tick, it never skips one for good.
     private var suppressSilentRefreshUntil = 0L
     private var loadJob: Job? = null
 
-    // silentRefresh() (folder watcher / poll) and loadFiles() both write to
-    // `files` from their own independent coroutines, with no cancellation
-    // between the two. Without this, whichever one happened to finish LAST
-    // won, regardless of which was actually the most recently requested -
-    // so a sort change's loadFiles() could occasionally lose the race to an
-    // in-flight silentRefresh() that started slightly earlier (e.g. from the
-    // 1s poll) and land with the pre-sort order, showing as "sort doesn't
-    // stick until I manually refresh". Every write now captures the current
-    // generation before doing IO and only applies its result if no newer
-    // request has started since - so the most recently requested update
-    // always wins, no matter which coroutine finishes first.
     private var filesGeneration = 0
-    var searchResults = mutableStateListOf<FileItem>()
-    var isRecursiveSearching by mutableStateOf(false)
-    var activeSearchFilter by mutableStateOf(SearchFilter.ALL)
+    val search = SearchController(viewModelScope, fileRepository, mediaStoreRepository, showHiddenFiles = { showHiddenFiles })
 
-    val filteredSearchResults: List<FileItem>
-        get() = filterSearchResults(searchResults, activeSearchFilter)
-
-    val searchFilterCounts: Map<SearchFilter, Int>
-        get() = computeSearchFilterCounts(searchResults)
-
-    // path -> (lastModified at time of scan, computed recursive size). Lets
-    // repeated sorts/re-visits skip re-walking a folder that hasn't changed.
     private val folderSizeCache = java.util.concurrent.ConcurrentHashMap<String, Pair<Long, Long>>()
 
     fun clearFolderSizeCache() {
         folderSizeCache.clear()
     }
 
-    /** Fills in real recursive folder sizes (computed in parallel, cached by
-     * path+mtime) so "sort by size" places folders where their actual
-     * contents put them, instead of every folder tying at 0 and clumping
-     * together in the middle of same-sized files. Only ever called when
-     * sortBy == SIZE, so it never slows down normal browsing/navigation. */
     private suspend fun withFolderSizes(list: List<FileItem>): List<FileItem> = coroutineScope {
         list.map { item ->
             async(Dispatchers.IO) {
@@ -864,23 +447,11 @@ class RoseViewModel(application: Application) : AndroidViewModel(application) {
     var hasRunEntranceAnimation by mutableStateOf(false)
     var hasRunCategoryCountAnimation by mutableStateOf(false)
 
-    // Home screen scroll position, saved continuously while Home is visible and
-    // re-applied every time Home is (re)composed - e.g. after opening a folder
-    // from Quick Access, a category, or the Recycle Bin and pressing back. This
-    // is intentionally scoped to Home only: folder-to-folder navigation inside
-    // "Files" already keeps its own scroll state per path and doesn't touch this.
     var homeScrollIndex by mutableStateOf(0)
     var homeScrollOffset by mutableStateOf(0)
 
-    // Active page for the category grid pager on Home (0 = Categories, 1 = Favourites)
     var categoryPageIndex by mutableStateOf(0)
 
-    // Scroll state for Recycle Bin to preserve position when going back and forth
-    var recycleBinScrollIndex by mutableStateOf(0)
-    var recycleBinScrollOffset by mutableStateOf(0)
-
-    // Material Files style: map to track scroll positions per directory path,
-    // so going back to a parent folder restores its previous scroll state.
     private val pathScrollPositions = mutableMapOf<String, Pair<Int, Int>>()
 
     fun saveScrollPosition(path: String, index: Int, offset: Int) {
@@ -901,7 +472,6 @@ class RoseViewModel(application: Application) : AndroidViewModel(application) {
 
     fun preLoadRoot() {
         if (rootCache != null) {
-            // If we have a cache, use it immediately to prevent jitter
             if (currentPath == Environment.getExternalStorageDirectory().absolutePath && files.isEmpty()) {
                 files = rootCache!!
             }
@@ -919,219 +489,116 @@ class RoseViewModel(application: Application) : AndroidViewModel(application) {
 
                 rootCache = rootFiles
 
-                // If we are currently at root and list is empty, update it
                 withContext(Dispatchers.Main) {
                     if (currentPath == root.absolutePath && files.isEmpty()) {
                         files = rootFiles
                     }
                 }
             } catch (e: Exception) {
-                // Ignore errors during pre-load
             }
         }
     }
 
-    // ----- Live directory watching (Fix: external transfers / downloads -----
-    // landing in the folder you're currently browsing used to only show up
-    // after a manual pull-to-refresh, and with no size updates in between.
-
-    private var directoryObserver: android.os.FileObserver? = null
-    private var watcherJob: Job? = null
-    private var pollJob: Job? = null
-    private var watchedPath: String? = null
-    private val watcherEvents = kotlinx.coroutines.channels.Channel<Unit>(kotlinx.coroutines.channels.Channel.CONFLATED)
-
-    private fun startWatchingDirectory(path: String) {
-        if (watchedPath == path && (directoryObserver != null || pollJob != null)) return
-        stopWatchingDirectory()
-
-        val dir = File(path)
-        if (!dir.exists() || !dir.isDirectory) return
-
-        watchedPath = path
-
-        val mask = android.os.FileObserver.CREATE or android.os.FileObserver.DELETE or
-                android.os.FileObserver.MODIFY or android.os.FileObserver.MOVED_FROM or
-                android.os.FileObserver.MOVED_TO or android.os.FileObserver.CLOSE_WRITE
-
-        // FileObserver construction (or delivery of its events) can silently
-        // fail on some devices/ROMs. It used to be `?: return` here, which
-        // meant a failed FileObserver also skipped setting up the poll below
-        // - so on a device where it failed, NEITHER mechanism ran, and live
-        // updates never worked at all no matter what. The poll now always
-        // starts regardless of whether this succeeds.
-        val observer = try {
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
-                object : android.os.FileObserver(dir, mask) {
-                    override fun onEvent(event: Int, relativePath: String?) {
-                        watcherEvents.trySend(Unit)
-                    }
-                }
-            } else {
-                @Suppress("DEPRECATION")
-                object : android.os.FileObserver(dir.absolutePath, mask) {
-                    override fun onEvent(event: Int, relativePath: String?) {
-                        watcherEvents.trySend(Unit)
-                    }
-                }
-            }
-        } catch (e: Exception) {
-            null
+    private val directoryWatcher = DirectoryWatcher(viewModelScope) { path, changedNames ->
+        if (currentPath == path && currentZipFile == null && categories.categoryFilterType == null) {
+            silentRefresh(path, changedNames)
         }
+    }
 
-        if (observer != null) {
-            observer.startWatching()
-            directoryObserver = observer
-
-            // A file being written arrives as a burst of many raw filesystem
-            // events (every chunk written fires MODIFY). Coalesce them into one
-            // cheap re-stat of the folder every ~400ms, so names/sizes update
-            // live - like Material Files - without hammering the UI thread.
-            watcherJob = viewModelScope.launch {
-                for (unit in watcherEvents) {
-                    delay(400)
-                    while (watcherEvents.tryReceive().isSuccess) { /* drain the rest of this burst */ }
-                    if (currentPath == path && watchedPath == path && currentZipFile == null && categoryFilterType == null) {
-                        silentRefresh(path)
-                    }
-                }
-            }
-        }
-
-        // FileObserver's MODIFY event isn't reliably delivered for writes
-        // coming from another app going through the FUSE/MediaStore layer on
-        // every device - some ROMs only forward the final CLOSE_WRITE, which
-        // would show the finished file but never a "growing" size in between.
-        // This poll is what actually guarantees the gradual size-increase
-        // behavior: a plain re-stat of the folder every second, independent
-        // of any event delivery, so a downloading/incoming file's size just
-        // reflects whatever is really on disk right now.
-        pollJob = viewModelScope.launch {
-            while (isActive) {
-                delay(1000)
-                if (currentPath == path && watchedPath == path && currentZipFile == null && categoryFilterType == null) {
-                    silentRefresh(path)
-                }
-            }
-        }
+    private fun startWatchingDirectory(path: String, items: List<FileItem>, dirMtime: Long) {
+        directoryWatcher.start(path)
+        directoryWatcher.track(path, items, dirMtime)
     }
 
     private fun stopWatchingDirectory() {
-        directoryObserver?.stopWatching()
-        directoryObserver = null
-        watcherJob?.cancel()
-        watcherJob = null
-        pollJob?.cancel()
-        pollJob = null
+        directoryWatcher.stop()
         silentRefreshJob?.cancel()
         silentRefreshJob = null
-        watchedPath = null
+        pendingSilentRefresh = null
     }
 
-    /** Same listing as loadFiles, but never toggles isLoading/isRefreshing -
-     * so a live update from the folder watcher just quietly updates names,
-     * item counts and sizes in place, with no spinner or flicker. */
     private var silentRefreshJob: Job? = null
-    // Separate from filesGeneration on purpose: silentRefresh (the background
-    // FileObserver/poll tick) used to share that counter with loadFiles, so a
-    // poll landing while an explicit loadFiles() was still in flight (e.g. the
-    // reload after a sort change, which walks folder sizes for Sort by Size
-    // and can take a moment) would bump the shared counter and make loadFiles
-    // silently discard its own, authoritative result at commit time - that's
-    // what made a sort change "sometimes" require a manual refresh to actually
-    // show. This counter only needs to protect silentRefresh from an older
-    // silentRefresh; it has no business invalidating loadFiles or vice versa.
     private var silentRefreshGeneration = 0
-    private var categoryGeneration = 0
-    internal fun getItemCount(file: File, showHiddenFiles: Boolean): Int? {
-        if (!file.isDirectory) return null
-        // File.list() (names only) is cheaper than File.listFiles() (stats every
-        // entry into a File object) when all we need here is a count.
-        val names = try { file.list() } catch (e: Exception) { null }
-        if (names != null) {
-            return if (!showHiddenFiles) {
-                names.count { !it.startsWith(".") }
-            } else {
-                names.size
-            }
-        }
+    internal fun getItemCount(file: File, showHiddenFiles: Boolean): Int? =
+        fileRepository.countChildren(file, showHiddenFiles)
 
-        // Fallback for restricted folders (Android/data, Android/obb)
-        val path = file.absolutePath
-        if (SafManager.isRestrictedPath(path)) {
-            if (ShizukuManager.isAvailable() && ShizukuManager.hasPermission()) {
-                val cleanPath = ShizukuManager.normalize(path)
-                // Use ls -1A to count all items (respecting hidden setting).
-                // Path MUST go through shellEscape() - it's free-form user data
-                // interpolated into a shell command, same as every other Shizuku
-                // call site (see ShizukuManager.shellEscape's doc comment for why
-                // raw interpolation here would be a command-injection vector).
-                val escapedPath = ShizukuManager.shellEscape(cleanPath)
-                val cmd = if (showHiddenFiles) "ls -1A $escapedPath | wc -l" else "ls -1 $escapedPath | wc -l"
-                return try {
-                    val process = ShizukuManager.newProcess(arrayOf("sh", "-c", cmd), null, null)
-                    val output = process.inputStream.bufferedReader().readText().trim()
-                    process.waitFor()
-                    output.toIntOrNull() ?: 0
-                } catch (e: Exception) {
-                    0
-                }
-            } else if (SafManager.hasPermission(getApplication(), path)) {
-                return try {
-                    val safResults = SafManager.listFiles(getApplication(), path)
-                    if (showHiddenFiles) safResults.size else safResults.count { !it.name.startsWith(".") }
-                } catch (e: Exception) { 0 }
-            }
-        }
-        return 0
-    }
+    private var pendingSilentRefresh: Set<String>? = null
 
-    private fun silentRefresh(path: String) {
-        // The FileObserver watcher and the poll can both ask for a refresh
-        // around the same time. Letting both run meant two independent
-        // folder-size computations could finish out of order - a slower one
-        // started earlier landing on Main *after* a faster, newer one - and
-        // whichever happened to win overwrote `files` with stale/partial
-        // data. That's what was scrambling folder positions under Sort by
-        // Size. Only ever one of these in flight at a time now.
-        silentRefreshJob?.cancel()
+    private fun silentRefresh(path: String, changedNames: Set<String>? = null) {
+        if (silentRefreshJob?.isActive == true) {
+            val pending = pendingSilentRefresh
+            pendingSilentRefresh = when {
+                changedNames == null || pending === FULL_REFRESH -> FULL_REFRESH
+                pending == null -> changedNames
+                else -> pending + changedNames
+            }
+            return
+        }
+        pendingSilentRefresh = null
         val requestGeneration = ++silentRefreshGeneration
+        val baseFiles = files
         silentRefreshJob = viewModelScope.launch(Dispatchers.IO) {
             try {
-                val directory = File(path)
-                if (!directory.exists() || !directory.isDirectory) return@launch
-
-                val rawFiles = directory.listFiles() ?: return@launch
-                val filteredFiles = if (!showHiddenFiles) {
-                    rawFiles.filter { !it.name.startsWith(".") }
+                val dirMtime = File(path).lastModified()
+                if (dirMtime == 0L) return@launch
+                val updated = if (changedNames != null) {
+                    patchEntries(path, baseFiles, changedNames)
                 } else {
-                    rawFiles.toList()
+                    val fileList = fileRepository.listLocalDirectory(path, showHiddenFiles) ?: return@launch
+                    val sized = if (sortBy == SortBy.SIZE || showFolderSize) withFolderSizes(fileList) else fileList
+                    sortFileList(sized)
                 }
-
-                val fileList = filteredFiles.map { file ->
-                    FileItem(
-                        file = file,
-                        itemCount = getItemCount(file, showHiddenFiles)
-                    )
-                }
-
-                val sizedFileList = if (sortBy == SortBy.SIZE || showFolderSize) withFolderSizes(fileList) else fileList
-                val sorted = sortFileList(sizedFileList)
 
                 withContext(Dispatchers.Main) {
-                    if (requestGeneration == silentRefreshGeneration && currentPath == path && System.currentTimeMillis() >= suppressSilentRefreshUntil) {
-                        files = sorted
-                        if (path == Environment.getExternalStorageDirectory().absolutePath) {
-                            rootCache = sorted
+                    val suppressedFor = suppressSilentRefreshUntil - System.currentTimeMillis()
+                    if (suppressedFor > 0 && requestGeneration == silentRefreshGeneration && currentPath == path) {
+                        viewModelScope.launch {
+                            kotlinx.coroutines.delay(suppressedFor + 50)
+                            if (currentPath == path) silentRefresh(path, changedNames)
                         }
+                    } else if (requestGeneration == silentRefreshGeneration && currentPath == path) {
+                        if (updated != files) {
+                            files = updated
+                            listingCache.put(path, updated, dirMtime)
+                            if (path == Environment.getExternalStorageDirectory().absolutePath) rootCache = updated
+                        }
+                        if (changedNames == null) directoryWatcher.track(path, updated, dirMtime)
                     }
                 }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (e: Exception) {
-                // Transient errors (a file mid-write, briefly missing, etc.)
-                // are expected here - just skip this tick, the next
-                // filesystem event will trigger another attempt.
+            } finally {
+                withContext(NonCancellable + Dispatchers.Main) {
+                    val pending = pendingSilentRefresh
+                    if (pending != null && silentRefreshJob?.isCancelled != true && currentPath == path) {
+                        pendingSilentRefresh = null
+                        silentRefreshJob = null
+                        silentRefresh(path, if (pending === FULL_REFRESH) null else pending)
+                    }
+                }
             }
         }
+    }
+
+    private suspend fun patchEntries(path: String, base: List<FileItem>, names: Set<String>): List<FileItem> {
+        val byName = HashMap<String, FileItem>(names.size * 2)
+        for (name in names) {
+            if (!showHiddenFiles && name.startsWith(".")) continue
+            val fresh = dev.narayan.rose.data.FileStat.read(File(path, name)) { dir -> getItemCount(dir, showHiddenFiles) }
+            if (fresh == null || base.none { it.name == name }) {
+                val fileList = fileRepository.listLocalDirectory(path, showHiddenFiles) ?: return base
+                val sized = if (sortBy == SortBy.SIZE || showFolderSize) withFolderSizes(fileList) else fileList
+                return sortFileList(sized)
+            }
+            byName[name] = fresh
+        }
+        if (byName.isEmpty()) return base
+        val patched = base.map { old ->
+            val fresh = byName[old.name] ?: return@map old
+            if (fresh.isDirectory) fresh.copy(size = old.size) else fresh
+        }
+        return if (sortBy == SortBy.NAME || sortBy == SortBy.TYPE) patched else sortFileList(patched)
     }
 
     enum class SortBy { NAME, DATE, SIZE, TYPE }
@@ -1150,8 +617,8 @@ class RoseViewModel(application: Application) : AndroidViewModel(application) {
                     debouncedMediaRefreshJob = viewModelScope.launch {
                         kotlinx.coroutines.delay(700)
                         loadRecentFiles()
-                        loadCategoryCounts(force = true)
-                        loadStorageInfo()
+                        categories.loadCategoryCounts(force = true)
+                        storage.loadStorageInfo()
                     }
                 }
             }
@@ -1159,7 +626,6 @@ class RoseViewModel(application: Application) : AndroidViewModel(application) {
             resolver.registerContentObserver(MediaStore.Files.getContentUri("external"), true, observer)
             mediaObserver = observer
         } catch (e: Throwable) {
-            // Permission may not be granted yet; will be registered when permissions are available
         }
     }
 
@@ -1173,12 +639,8 @@ class RoseViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     init {
-        // We no longer load recent files here to prevent potential
-        // startup crashes if permissions are not yet granted.
-        // HomeScreen will trigger loading when it becomes visible.
         registerMediaObserver()
 
-        // Add default excluded folders if none are set
         if (settings.excludedFolders.isEmpty()) {
             val root = Environment.getExternalStorageDirectory().absolutePath
             val defaults = mutableSetOf(
@@ -1186,48 +648,18 @@ class RoseViewModel(application: Application) : AndroidViewModel(application) {
                 "$root/Android/media/com.whatsapp/WhatsApp/Databases",
                 "$root/Music/Recordings/Call Recordings"
             )
-            // Filter only those that exist or are standard
             _excludedFolders.value = defaults
             settings.excludedFolders = defaults
         }
 
-        // Sanitize quick access custom paths to prevent duplicate key crashes
-        val activeDefaultNormalized = getDefaultQuickAccessFolders()
-            .filter { !quickAccessRemoved.contains(it.first) }
-            .map { normalizePath(it.second) }
-            .toSet()
-        val seen = mutableSetOf<String>()
-        val sanitizedCustom = quickAccessCustomPaths.filter { path ->
-            val norm = normalizePath(path)
-            !activeDefaultNormalized.contains(norm) && seen.add(norm)
-        }
-        if (sanitizedCustom.size != quickAccessCustomPaths.size) {
-            quickAccessCustomPaths = sanitizedCustom
-            settings.quickAccessCustomPaths = sanitizedCustom
-        }
+        favourites.sanitize()
 
-        // Sanitize favourite files to prevent duplicates
-        val seenFavFiles = mutableSetOf<String>()
-        val sanitizedFavFiles = favouriteFiles.filter { path ->
-            val norm = normalizePath(path)
-            seenFavFiles.add(norm)
-        }
-        if (sanitizedFavFiles.size != favouriteFiles.size) {
-            favouriteFiles = sanitizedFavFiles
-            settings.favouriteFiles = sanitizedFavFiles
-        }
+        recycleBin.loadRecycleBin()
 
-        // Clean up expired items from recycle bin
-        loadRecycleBin()
-
-        // React to job events (Copy, Move, Download, Delete, Recycle, Restore)
         viewModelScope.launch {
             JobManager.jobEvents.collect { result ->
                 val job = result.job
 
-                // If a job just finished, refresh the file list to ensure disk state is synced.
-                // For deletions, we also explicitly remove from the current list immediately
-                // to prevent them from "reappearing" if the background scan is slow.
                 if (result.failedItems.isNotEmpty()) {
                     withContext(Dispatchers.Main) {
                         val opType = when (job.type) {
@@ -1257,30 +689,20 @@ class RoseViewModel(application: Application) : AndroidViewModel(application) {
                             errorMessage = "Operation failed: ${result.error ?: "Unknown error"}"
                         }
                         if (job.type is dev.narayan.rose.filejob.FileJobType.Restore) {
-                            recycleBinBulkOperationActive = false
-                            loadRecycleBin()
+                            recycleBin.onBinJobFinished()
                         }
                     }
                 }
 
                 val affectedPaths = job.completedPaths
                 if (affectedPaths.isNotEmpty()) {
-                    // Give the LazyColumn's own removal animation room to play
-                    // out before the folder watcher's next silentRefresh tick.
                     suppressSilentRefreshUntil = System.currentTimeMillis() + 1200
 
-                    // Optimistically decrement category counts for files we know
-                    // were actually removed (Delete/Recycle). Re-querying MediaStore
-                    // right away instead used to show the stale, pre-delete count for
-                    // a while for every category except Photos/Videos (whose
-                    // MediaStore rows tend to update fastest) - the scanFile pass
-                    // that tells MediaStore a file is gone (see FileJob) is async and
-                    // isn't done yet by the time this event fires.
                     val isRemoval = job.type is dev.narayan.rose.filejob.FileJobType.Delete ||
                             job.type is dev.narayan.rose.filejob.FileJobType.Recycle ||
                             job.type is dev.narayan.rose.filejob.FileJobType.Move
                     if (isRemoval) {
-                        val removedItems = (files + recentFiles + categoryFiles + searchResults)
+                        val removedItems = (files + recentFiles + categories.categoryFiles + search.searchResults)
                             .filter { it.file.absolutePath in affectedPaths && !it.isDirectory }
                             .distinctBy { it.file.absolutePath }
 
@@ -1289,22 +711,7 @@ class RoseViewModel(application: Application) : AndroidViewModel(application) {
 
                         if (removedTypes.isNotEmpty()) {
                             withContext(Dispatchers.Main) {
-                                val updated = categoryCounts.toMutableMap()
-                                removedTypes.forEach { type ->
-                                    updated[type]?.let { current -> updated[type] = (current - 1).coerceAtLeast(0) }
-                                }
-                                categoryCounts = updated
-
-                                // Update album counts in categoryFiles if we are in the album list
-                                if (categoryFilterType == FileType.IMAGE && categoryBucketId == null && removedBuckets.isNotEmpty()) {
-                                    categoryFiles = categoryFiles.map { item ->
-                                        if (item.isDirectory && item.bucketId in removedBuckets) {
-                                            item.copy(itemCount = (item.itemCount ?: 0) - 1)
-                                        } else {
-                                            item
-                                        }
-                                    }
-                                }
+                                categories.onItemsRemoved(removedTypes, removedBuckets)
                             }
                         }
                     }
@@ -1314,32 +721,24 @@ class RoseViewModel(application: Application) : AndroidViewModel(application) {
                             files = files.filter { it.file.absolutePath !in affectedPaths }
                             recentFiles = recentFiles.filter { it.file.absolutePath !in affectedPaths }
                             saveCachedRecentFiles(recentFiles)
-                            categoryFiles = categoryFiles.filter { it.file.absolutePath !in affectedPaths }
-                            invalidateCategoryCache()
+                            categories.removePaths(affectedPaths)
                             invalidateDirectoryCache(currentPath)
                             affectedPaths.forEach { p ->
                                 File(p).parent?.let { invalidateDirectoryCache(it) }
                             }
-                            searchResults.removeAll { it.file.absolutePath in affectedPaths }
+                            search.removePaths(affectedPaths)
                         }
 
-                        // If a recycle/restore happened, refresh the bin items too
                         if (job.type is dev.narayan.rose.filejob.FileJobType.Recycle ||
                             job.type is dev.narayan.rose.filejob.FileJobType.Restore) {
-                            recycleBinBulkOperationActive = false
-                            loadRecycleBin()
+                            recycleBin.onBinJobFinished()
                         }
                     }
-                    // Refresh category counts from MediaStore for eventual
-                    // consistency, once its async scan from the delete has had a
-                    // realistic chance to finish. An immediate force=true query
-                    // here would just read the still-stale index and flicker the
-                    // count we already corrected above back to the old value.
                     viewModelScope.launch {
                         kotlinx.coroutines.delay(1500)
-                        loadCategoryCounts(force = true)
+                        categories.loadCategoryCounts(force = true)
                         loadRecentFiles()
-                        loadStorageInfo()
+                        storage.loadStorageInfo()
                     }
                 }
 
@@ -1375,7 +774,6 @@ class RoseViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
 
-                // Handle offline download success/failure
                 val downloadType = job.type as? dev.narayan.rose.filejob.FileJobType.Download ?: return@collect
                 val sourcePath = downloadType.source.path
                 val targetFile = File(downloadType.targetFile.toString())
@@ -1389,7 +787,6 @@ class RoseViewModel(application: Application) : AndroidViewModel(application) {
                         files = files.toList()
                     }
                 } else {
-                    // Download failed or was cancelled
                     if (targetFile.exists()) targetFile.delete()
                     val normalizedSource = SafManager.normalizeSafPath(sourcePath)
                     val updated = offlineFiles.filterNot {
@@ -1408,7 +805,6 @@ class RoseViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
 
-        // Live update: refresh when items are processed in a job targeting current folder
         viewModelScope.launch {
             var lastProcessedMap = mutableMapOf<String, Int>()
             JobManager.activeJobs.collect { jobs ->
@@ -1429,35 +825,21 @@ class RoseViewModel(application: Application) : AndroidViewModel(application) {
                     lastProcessedMap[id] = job.processedItems
                 }
 
-                // Clean up finished jobs from our tracker
                 lastProcessedMap.keys.retainAll(jobs.keys)
 
                 if (shouldRefresh) {
                     invalidateDirectoryCache(currentPath)
-                    loadFiles(currentPath, isManualRefresh = true, showLoading = false)
+                    if (directoryWatcher.watchedPath == currentPath) {
+                        silentRefresh(currentPath)
+                    } else {
+                        loadFiles(currentPath, isManualRefresh = true, showLoading = false)
+                    }
                 }
             }
         }
 
-        // Synchronize update preferences from DataStore
-        viewModelScope.launch {
-            updatePreferences.autoCheckEnabledFlow.collect { enabled ->
-                _autoCheckUpdates.value = enabled
-                settings.autoCheckUpdates = enabled
-            }
-        }
-        viewModelScope.launch {
-            updatePreferences.skippedVersionFlow.collect { skipped ->
-                _skippedVersion.value = skipped
-                settings.skippedUpdateVersion = skipped
-            }
-        }
-
-        // Automatic update check on app launch (throttled to once per 24 hours)
-        performAutoUpdateCheckIfNeeded()
+        updates.start()
     }
-
-    // ----- Theme settings -----
 
     fun setThemeMode(mode: ThemeMode) {
         _themeMode.value = mode
@@ -1474,8 +856,6 @@ class RoseViewModel(application: Application) : AndroidViewModel(application) {
         settings.dynamicColor = enabled
     }
 
-    // ----- Display / view settings -----
-
     fun setGridView(enabled: Boolean) {
         _isGridView.value = enabled
         settings.isGridView = enabled
@@ -1491,9 +871,8 @@ class RoseViewModel(application: Application) : AndroidViewModel(application) {
         settings.foldersFirst = enabled
         pathScrollPositions.clear()
         invalidateDirectoryCache()
-        if (categoryFilterType != null) {
-            categoryFiles = sortFileList(categoryFiles)
-            categoryCache[categoryFilterType!! to categoryBucketId] = categoryFiles
+        if (categories.isActive) {
+            categories.resort()
         } else if (currentZipFile != null) {
             files = sortFileList(files)
         } else if (currentPath.isNotEmpty()) {
@@ -1580,6 +959,7 @@ class RoseViewModel(application: Application) : AndroidViewModel(application) {
     fun toggleHiddenFiles() {
         showHiddenFiles = !showHiddenFiles
         settings.showHiddenFiles = showHiddenFiles
+        listingCache.invalidate()
         loadFiles(currentPath)
     }
 
@@ -1593,25 +973,15 @@ class RoseViewModel(application: Application) : AndroidViewModel(application) {
         settings.sortBy = sortBy.name
         settings.sortOrder = sortOrder.name
 
-        // Material Files style: changing sort should reset scroll positions for
-        // the current navigation session, as the list layout has changed.
         pathScrollPositions.clear()
         invalidateDirectoryCache()
 
-        // If we're in a virtual view (Category or Zip), we don't reload from currentPath
-        // but instead just re-sort the existing lists.
-        if (categoryFilterType != null) {
-            categoryFiles = sortFileList(categoryFiles)
-            categoryCache[categoryFilterType!! to categoryBucketId] = categoryFiles
+        if (categories.isActive) {
+            categories.resort()
         } else if (currentZipFile != null) {
             files = sortFileList(files)
         } else if (currentPath.isEmpty()) {
-            // Recent files should not be manually sorted as per requirements
         } else {
-            // Re-sort what's already in memory right away so the change is visible
-            // instantly, every time. Only Sort by Size needs a background reload
-            // to fetch recursive folder sizes; for all other sorts, in-memory re-sort
-            // is authoritative, instant, and prevents laggy double-animation.
             files = sortFileList(files)
             if (sortBy == SortBy.SIZE) {
                 loadFiles(currentPath, showLoading = false, isManualRefresh = true)
@@ -1620,11 +990,12 @@ class RoseViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun sortFileList(list: List<FileItem>): List<FileItem> {
+        val byName = Comparator<FileItem> { a, b -> String.CASE_INSENSITIVE_ORDER.compare(a.name, b.name) }
         val comparator = when (sortBy) {
-            SortBy.NAME -> compareBy<FileItem> { it.name.lowercase() }
-            SortBy.DATE -> compareBy<FileItem> { it.lastModified }.thenBy { it.name.lowercase() }
-            SortBy.SIZE -> compareBy<FileItem> { it.size }.thenBy { it.name.lowercase() }
-            SortBy.TYPE -> compareBy<FileItem> { it.fileType }.thenBy { it.name.lowercase() }
+            SortBy.NAME -> byName
+            SortBy.DATE -> compareBy<FileItem> { it.lastModified }.then(byName)
+            SortBy.SIZE -> compareBy<FileItem> { it.size }.then(byName)
+            SortBy.TYPE -> compareBy<FileItem> { it.fileType }.then(byName)
         }
 
         val finalComparator = if (sortOrder == SortOrder.DESCENDING) {
@@ -1645,11 +1016,8 @@ class RoseViewModel(application: Application) : AndroidViewModel(application) {
         private set
 
     fun loadFiles(path: String, isManualRefresh: Boolean = false, showLoading: Boolean = true) {
-        // Clear any stale storage-removed event when we explicitly start browsing a path.
-        // This prevents the "USB drive was removed" toast from firing if a drive was
-        // previously ejected while we were on the Home screen and then re-inserted.
-        if (storageRemovedEvent != null) {
-            clearStorageRemovedEvent()
+        if (storage.storageRemovedEvent != null) {
+            storage.clearStorageRemovedEvent()
         }
 
         val normalizedPath = ShizukuManager.normalize(path)
@@ -1661,11 +1029,10 @@ class RoseViewModel(application: Application) : AndroidViewModel(application) {
             "application/vnd.android.package-archive"
         )
 
-        // Check if it's an archive, including restricted paths and shared URIs
         val isArchive = if (path.startsWith("content://") || path.startsWith("/content:/") || path.startsWith("content:/")) {
             val normalizedUriStr = SafManager.normalizeSafPath(path)
             val uri = runCatching { Uri.parse(normalizedUriStr) }.getOrNull()
-            if (uri != null && (DocumentsContract.isTreeUri(uri) || storageDevices.any { it.path == path || it.path == normalizedUriStr })) {
+            if (uri != null && (DocumentsContract.isTreeUri(uri) || storage.storageDevices.any { it.path == path || it.path == normalizedUriStr })) {
                 false
             } else if (uri != null) {
                 val mime = runCatching { getApplication<Application>().contentResolver.getType(uri) }.getOrNull()
@@ -1700,8 +1067,6 @@ class RoseViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
 
-        // Directory Cache: strictly for restricted paths (Android/data and obb) to make back-and-forth navigation instant.
-        // Normal paths (Downloads, DCIM, etc.) are never cached to guarantee fresh results and prevent double-animation.
         val isRestrictedFolder = isShizukuRestrictedPath(normalizedPath)
         val cached = if (!isManualRefresh && isRestrictedFolder) directoryCache[normalizedPath] else null
         if (cached != null && System.currentTimeMillis() - cached.first < 60_000L) {
@@ -1712,15 +1077,22 @@ class RoseViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
 
-        // Material Files style: if navigating to a new path, open it instantly, clear
-        // current files, and show a loading spinner if the scan takes more than a moment.
+        val cachedListing = if (!isManualRefresh && !isRestrictedFolder && !SafManager.isSafUri(normalizedPath)) {
+            listingCache.get(normalizedPath)
+        } else null
+
         loadJob?.cancel()
         accessDenied = false
         if (normalizedPath != currentPath) {
             currentPath = normalizedPath
-            files = emptyList()
-            isLoading = true
-        } else {
+            if (cachedListing != null) {
+                files = sortFileList(cachedListing.items)
+                isLoading = false
+            } else {
+                files = emptyList()
+                isLoading = true
+            }
+        } else if (cachedListing == null) {
             if (isManualRefresh) isRefreshing = true else if (showLoading) isLoading = true
         }
 
@@ -1734,144 +1106,40 @@ class RoseViewModel(application: Application) : AndroidViewModel(application) {
                 currentZipFile = null
                 currentZipEntryPath = ""
 
-                // Android/data and Android/obb can never be reached via raw java.io.File,
-                // even with MANAGE_EXTERNAL_STORAGE, on Android 12+ - that block is
-                // hardcoded at the filesystem layer.
                 val isSaf = SafManager.isSafUri(normalizedPath)
                 val isRestricted = !isSaf && isShizukuRestrictedPath(normalizedPath)
                 val isRemote = isRemotePath(normalizedPath)
+                val isLocal = !isSaf && !isRestricted && !isRemote
 
-                val result = withContext(Dispatchers.IO) {
-                    if (isSaf) {
-                        val safResults = SafManager.listFiles(getApplication(), normalizedPath).let { list ->
-                            if (!showHiddenFiles) list.filter { !it.name.startsWith(".") } else list
+                val dirMtime = if (isLocal) withContext(Dispatchers.IO) { File(normalizedPath).lastModified() } else 0L
+
+                val reusable = cachedListing != null && dirMtime != 0L &&
+                        cachedListing.dirMtime == dirMtime && cachedListing.ageMs < LISTING_CACHE_FRESH_MS
+
+                val result = if (reusable) {
+                    sortFileList(cachedListing!!.items)
+                } else {
+                    val listing = roseNGLog.timed(TAG, "loadFiles $normalizedPath", { l ->
+                        if (l is DirectoryListing.Success) "${l.items.size} items" else "access denied"
+                    }) {
+                        fileRepository.listDirectory(normalizedPath, showHiddenFiles, useRoot)
+                    }
+                    val rawItems = when (listing) {
+                        is DirectoryListing.Success -> listing.items
+                        DirectoryListing.AccessDenied -> {
+                            withContext(Dispatchers.Main) { accessDenied = true }
+                            emptyList()
                         }
-                        val sizedFileList = if (sortBy == SortBy.SIZE || showFolderSize) {
-                            withFolderSizes(safResults)
-                        } else {
-                            safResults
-                        }
-                        sortFileList(sizedFileList)
-                    } else if (isRemote) {
-                        emptyList<FileItem>()
-                    } else {
-                        val directory = File(normalizedPath)
-
-                        // Try normal filesystem access first (fastest)
-                        val rawFiles = if (isRestricted) null else try { directory.listFiles() } catch (e: Exception) { null }
-
-                        if (rawFiles != null) {
-                            // Normal access worked
-                            val filteredFiles = if (!showHiddenFiles) {
-                                rawFiles.filter { !it.name.startsWith(".") }
-                            } else {
-                                rawFiles.toList()
-                            }
-
-                            // Per-item counts are independent of each other, so fan them
-                            // out instead of doing thousands of sequential listFiles()
-                            // calls one after another - that's what was stalling first
-                            // paint on folders with many subfolders. Already inside
-                            // withContext(Dispatchers.IO) above, so this stays on IO.
-                            val fileList = coroutineScope {
-                                filteredFiles.map { file ->
-                                    async {
-                                        FileItem(
-                                            file = file,
-                                            itemCount = getItemCount(file, showHiddenFiles)
-                                        )
-                                    }
-                                }.awaitAll()
-                            }
-
-                            val sizedFileList = if (sortBy == SortBy.SIZE || showFolderSize) {
-                                withFolderSizes(fileList)
-                            } else {
-                                fileList
-                            }
-
-                            sortFileList(sizedFileList)
-                        } else if (isRestricted) {
-                            // Restricted path (Android/data or obb)
-
-                            // Ditto NFile style: request binder if not available
-                            if (!ShizukuManager.isAvailable()) {
-                                ShizukuManager.requestBinder(getApplication())
-                            }
-
-                            // Wait a short moment for binder (CX File Explorer/NFile style smoothness)
-                            if (!ShizukuManager.isAvailable()) {
-                                repeat(6) {
-                                    if (ShizukuManager.isAvailable()) return@repeat
-                                    kotlinx.coroutines.delay(60)
-                                }
-                            }
-
-                            // Priority 1: Shizuku (Professional solution, no picker)
-                            val restrictedList = if (ShizukuManager.isAvailable()) {
-                                if (ShizukuManager.hasPermission()) {
-                                    val shizukuResults = ShizukuManager.listFiles(normalizedPath, showHiddenFiles)
-
-                                    // Fallback to SAF only if Shizuku returned empty and SAF permission is held
-                                    if (shizukuResults.isEmpty() && SafManager.hasPermission(getApplication(), normalizedPath)) {
-                                        val safResults = SafManager.listFiles(getApplication(), normalizedPath).let { list ->
-                                            if (!showHiddenFiles) list.filter { !it.name.startsWith(".") } else list
-                                        }
-                                        if (safResults.isNotEmpty()) safResults else shizukuResults
-                                    } else {
-                                        shizukuResults
-                                    }
-                                } else {
-                                    // Shizuku running but needs authorization.
-                                    // Must set accessDenied = true so RestrictedFolderView is shown with "Grant Access"!
-                                    withContext(Dispatchers.Main) {
-                                        accessDenied = true
-                                    }
-                                    emptyList<FileItem>()
-                                }
-                            } else if (SafManager.hasPermission(getApplication(), normalizedPath)) {
-                                // Priority 2: SAF (Fallback ONLY if Shizuku is truly unavailable)
-                                val safResults = SafManager.listFiles(getApplication(), normalizedPath).let { list ->
-                                    if (!showHiddenFiles) list.filter { !it.name.startsWith(".") } else list
-                                }
-                                safResults
-                            } else {
-                                // No Shizuku AND no SAF permission.
-                                withContext(Dispatchers.Main) {
-                                    accessDenied = true
-                                }
-                                emptyList()
-                            }
-
-                            val sizedFileList = if (sortBy == SortBy.SIZE || showFolderSize) {
-                                withFolderSizes(restrictedList)
-                            } else {
-                                restrictedList
-                            }
-                            sortFileList(sizedFileList)
-                        } else {
-                            // Normal folder where File.listFiles() failed (e.g. root or OS protected folder)
-                            if (useRoot && RootManager.isRootAvailable()) {
-                                val rootFiles = RootManager.listFiles(normalizedPath, showHiddenFiles)
-                                val sizedFileList = if (sortBy == SortBy.SIZE || showFolderSize) {
-                                    withFolderSizes(rootFiles)
-                                } else {
-                                    rootFiles
-                                }
-                                sortFileList(sizedFileList)
-                            } else {
-                                withContext(Dispatchers.Main) {
-                                    accessDenied = true
-                                }
-                                emptyList()
-                            }
-                        }
+                    }
+                    withContext(Dispatchers.IO) {
+                        val sized = if (sortBy == SortBy.SIZE || showFolderSize) withFolderSizes(rawItems) else rawItems
+                        sortFileList(sized)
                     }
                 }
 
                 withContext(Dispatchers.Main) {
                     if (requestGeneration != filesGeneration) return@withContext
-                    files = result
+                    if (result != files) files = result
                     isLoading = false
                     isRefreshing = false
                     if (!accessDenied && isRestricted) {
@@ -1880,9 +1148,9 @@ class RoseViewModel(application: Application) : AndroidViewModel(application) {
                     if (normalizedPath == Environment.getExternalStorageDirectory().absolutePath) {
                         rootCache = result
                     }
-                    val directory = File(normalizedPath)
-                    if (!isSaf && !isRestricted && !isRemote && directory.exists() && directory.isDirectory) {
-                        startWatchingDirectory(normalizedPath)
+                    if (isLocal && dirMtime != 0L && !accessDenied) {
+                        if (!reusable) listingCache.put(normalizedPath, result, dirMtime)
+                        startWatchingDirectory(normalizedPath, result, dirMtime)
                     } else {
                         stopWatchingDirectory()
                     }
@@ -1905,228 +1173,12 @@ class RoseViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private var searchJob: Job? = null
-
     fun searchFiles(
         query: String,
-        filterType: FileType? = categoryFilterType,
-        bucketId: String? = categoryBucketId,
-        scopePath: String? = if (categoryFilterType != null) null else currentPath
-    ) {
-        searchJob?.cancel()
-        if (query.isBlank()) {
-            searchResults.clear()
-            isRecursiveSearching = false
-            activeSearchFilter = SearchFilter.ALL
-            return
-        }
-
-        // Set immediately so UI transitions to searching state without blank/no-results flicker
-        isRecursiveSearching = true
-
-        // Instant in-memory results if categoryFiles is already loaded
-        if (filterType != null && categoryFiles.isNotEmpty()) {
-            val instantMatches = categoryFiles.filter {
-                it.name.contains(query, ignoreCase = true) &&
-                (bucketId == null || it.bucketId == bucketId) &&
-                it.matchesCategory(filterType)
-            }.sortedWith(
-                compareByDescending<FileItem> { it.isDirectory }
-                    .thenByDescending { it.name.equals(query, ignoreCase = true) }
-                    .thenByDescending { it.name.startsWith(query, ignoreCase = true) }
-                    .thenBy { it.name.lowercase() }
-            )
-            searchResults.clear()
-            searchResults.addAll(instantMatches)
-        } else {
-            searchResults.clear()
-        }
-
-        searchJob = viewModelScope.launch(Dispatchers.IO) {
-            kotlinx.coroutines.delay(180)
-            ensureActive()
-
-            val results = mutableListOf<FileItem>()
-
-            // Determine if the search scope is restricted to Android/data or Android/obb
-            val rawScope = scopePath?.let { ShizukuManager.normalize(it) } ?: ""
-            val cleanScope = if (rawScope == Environment.getExternalStorageDirectory().absolutePath) "" else rawScope
-            val isDataScope = cleanScope.contains("/Android/data", ignoreCase = true) || cleanScope.endsWith("/Android/data")
-            val isObbScope = cleanScope.contains("/Android/obb", ignoreCase = true) || cleanScope.endsWith("/Android/obb")
-            val isRestrictedScope = isDataScope || isObbScope
-
-            if (isRestrictedScope) {
-                // Strict isolation: User is searching inside Android/data or Android/obb.
-                // Search ONLY within this restricted scope (do not query MediaStore or other folders).
-                if (ShizukuManager.isAvailable() && ShizukuManager.hasPermission()) {
-                    val shizukuResults = ShizukuManager.searchFiles(
-                        searchRoot = cleanScope,
-                        query = query,
-                        filterType = filterType,
-                        showHiddenFiles = showHiddenFiles,
-                        maxResults = 100
-                    )
-                    results.addAll(shizukuResults)
-                } else if (SafManager.hasPermission(getApplication(), cleanScope)) {
-                    val safResults = SafManager.searchFiles(
-                        context = getApplication(),
-                        rootPath = cleanScope,
-                        query = query,
-                        filterType = filterType,
-                        showHiddenFiles = showHiddenFiles,
-                        maxResults = 100
-                    )
-                    results.addAll(safResults)
-                }
-            } else {
-                // User is searching from Home Screen, All Files, or a Category outside Android/data / Android/obb.
-                // Enforce that results NEVER contain Android/data or Android/obb.
-                val queryUri = MediaStore.Files.getContentUri("external")
-                val projection = arrayOf(
-                    MediaStore.Files.FileColumns.DATA,
-                    MediaStore.Files.FileColumns.DISPLAY_NAME,
-                    MediaStore.Files.FileColumns.SIZE,
-                    MediaStore.Files.FileColumns.DATE_MODIFIED,
-                    MediaStore.Files.FileColumns.MIME_TYPE
-                )
-
-                val conditions = mutableListOf<String>()
-                val selectionArgs = mutableListOf<String>()
-
-                // Scope path (if scoped to a specific normal folder)
-                if (cleanScope.isNotEmpty()) {
-                    conditions.add("${MediaStore.Files.FileColumns.DATA} LIKE ?")
-                    selectionArgs.add("$cleanScope/%")
-                }
-
-                // Name match
-                conditions.add("${MediaStore.Files.FileColumns.DISPLAY_NAME} LIKE ?")
-                selectionArgs.add("%$query%")
-
-                // Category type filter (if searching within a category)
-                if (filterType != null) {
-                    val catClause = when (filterType) {
-                        FileType.IMAGE -> "(${MediaStore.Files.FileColumns.MEDIA_TYPE} = ${MediaStore.Files.FileColumns.MEDIA_TYPE_IMAGE} OR ${MediaStore.MediaColumns.DATA} LIKE '%.jpg' OR ${MediaStore.MediaColumns.DATA} LIKE '%.jpeg' OR ${MediaStore.MediaColumns.DATA} LIKE '%.png' OR ${MediaStore.MediaColumns.DATA} LIKE '%.webp')"
-                        FileType.VIDEO -> "(${MediaStore.Files.FileColumns.MEDIA_TYPE} = ${MediaStore.Files.FileColumns.MEDIA_TYPE_VIDEO} OR ${MediaStore.MediaColumns.DATA} LIKE '%.mp4' OR ${MediaStore.MediaColumns.DATA} LIKE '%.mkv')"
-                        FileType.AUDIO -> "(${MediaStore.Files.FileColumns.MEDIA_TYPE} = ${MediaStore.Files.FileColumns.MEDIA_TYPE_AUDIO} OR ${MediaStore.MediaColumns.DATA} LIKE '%.mp3' OR ${MediaStore.MediaColumns.DATA} LIKE '%.m4a')"
-                        FileType.PDF -> "(${MediaStore.Files.FileColumns.MIME_TYPE} = 'application/pdf' OR ${MediaStore.MediaColumns.DATA} LIKE '%.pdf')"
-                        FileType.APK -> "(${MediaStore.Files.FileColumns.MIME_TYPE} = 'application/vnd.android.package-archive' OR ${MediaStore.MediaColumns.DATA} LIKE '%.apk')"
-                        FileType.ZIP -> "(${MediaStore.MediaColumns.DATA} LIKE '%.zip' OR ${MediaStore.MediaColumns.DATA} LIKE '%.rar' OR ${MediaStore.MediaColumns.DATA} LIKE '%.7z' OR ${MediaStore.MediaColumns.DATA} LIKE '%.tar' OR ${MediaStore.MediaColumns.DATA} LIKE '%.gz')"
-                        FileType.DOCUMENT -> "(${MediaStore.Files.FileColumns.MIME_TYPE} LIKE 'text/%' OR ${MediaStore.Files.FileColumns.MIME_TYPE} = 'application/pdf' OR ${MediaStore.Files.FileColumns.MIME_TYPE} LIKE 'application/msword' OR ${MediaStore.Files.FileColumns.MIME_TYPE} LIKE 'application/vnd.openxmlformats-officedocument%' OR ${MediaStore.MediaColumns.DATA} LIKE '%.txt' OR ${MediaStore.MediaColumns.DATA} LIKE '%.doc%' OR ${MediaStore.MediaColumns.DATA} LIKE '%.pdf')"
-                        else -> null
-                    }
-                    if (catClause != null) {
-                        conditions.add(catClause)
-                    }
-                }
-
-                if (bucketId != null) {
-                    conditions.add("${MediaStore.Images.Media.BUCKET_ID} = ?")
-                    selectionArgs.add(bucketId)
-                }
-
-                // Strictly exclude Android/data and Android/obb from global search results
-                conditions.add("${MediaStore.MediaColumns.DATA} NOT LIKE '%/Android/data/%'")
-                conditions.add("${MediaStore.MediaColumns.DATA} NOT LIKE '%/Android/obb/%'")
-
-                if (!showHiddenFiles) {
-                    conditions.add("${MediaStore.MediaColumns.DATA} NOT LIKE '%/.%'")
-                }
-
-                val selection = conditions.joinToString(" AND ")
-
-                try {
-                    getApplication<Application>().contentResolver.query(
-                        queryUri,
-                        projection,
-                        selection,
-                        selectionArgs.toTypedArray(),
-                        "${MediaStore.Files.FileColumns.DATE_MODIFIED} DESC"
-                    )?.use { cursor ->
-                        val dataCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.DATA)
-                        val nameCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.DISPLAY_NAME)
-                        val sizeCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.SIZE)
-                        val dateCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.DATE_MODIFIED)
-                        val mimeCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.MIME_TYPE)
-
-                        while (cursor.moveToNext()) {
-                            ensureActive()
-                            val path = cursor.getString(dataCol) ?: continue
-                            // Extra safety check against Android/data and Android/obb
-                            if (path.contains("/Android/data", ignoreCase = true) || path.contains("/Android/obb", ignoreCase = true)) continue
-
-                            val file = File(path)
-                            if (file.exists()) {
-                                val name = cursor.getString(nameCol) ?: file.name
-                                val size = cursor.getLong(sizeCol)
-                                val date = cursor.getLong(dateCol) * 1000
-                                val mime = cursor.getString(mimeCol)
-                                val item = FileItem(
-                                    file = file,
-                                    isDirectory = file.isDirectory,
-                                    name = name,
-                                    size = size,
-                                    lastModified = date,
-                                    extension = name.substringAfterLast('.', "").lowercase(),
-                                    mimeType = mime
-                                )
-                                if (filterType == null || item.matchesCategory(filterType)) {
-                                    results.add(item)
-                                }
-                            }
-                            if (results.size >= 100) break
-                        }
-                    }
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {}
-
-                // Filesystem walk fallback for non-indexed files
-                if (results.size < 100) {
-                    try {
-                        val alreadyFound = results.mapTo(mutableSetOf()) { it.file.absolutePath }
-                        val scanRoot = if (cleanScope.isNotEmpty()) {
-                            File(cleanScope)
-                        } else {
-                            Environment.getExternalStorageDirectory()
-                        }
-                        scanFilesystemForQuery(query, scanRoot, filterType = filterType, maxResults = 100 - results.size).forEach { file ->
-                            ensureActive()
-                            val path = file.absolutePath
-                            if (!path.contains("/Android/data", ignoreCase = true) && !path.contains("/Android/obb", ignoreCase = true)) {
-                                if (path !in alreadyFound) {
-                                    val item = FileItem(file)
-                                    if (filterType == null || item.matchesCategory(filterType)) {
-                                        results.add(item)
-                                        alreadyFound.add(path)
-                                    }
-                                }
-                            }
-                        }
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (e: Exception) {}
-                }
-            }
-
-            // Ensure folders are ALWAYS sorted first, followed by exact/prefix matches and alphabetical order
-            val finalResults = results
-                .distinctBy { it.file.absolutePath }
-                .sortedWith(
-                    compareByDescending<FileItem> { it.isDirectory }
-                        .thenByDescending { it.name.equals(query, ignoreCase = true) }
-                        .thenByDescending { it.name.startsWith(query, ignoreCase = true) }
-                        .thenBy { it.name.lowercase() }
-                )
-
-            withContext(Dispatchers.Main) {
-                searchResults.clear()
-                searchResults.addAll(finalResults)
-                isRecursiveSearching = false
-            }
-        }
-    }
-
+        filterType: FileType? = categories.categoryFilterType,
+        bucketId: String? = categories.categoryBucketId,
+        scopePath: String? = if (categories.categoryFilterType != null) null else currentPath
+    ) = search.search(query, filterType, bucketId, scopePath, inMemorySource = categories.categoryFiles)
 
     fun openArchive(file: File, initialEntryPath: String = "") {
         stopWatchingDirectory()
@@ -2144,7 +1196,9 @@ class RoseViewModel(application: Application) : AndroidViewModel(application) {
                 if (!file.exists()) {
                     throw Exception("Archive file no longer exists.")
                 }
-                val entries = ArchiveManager.readEntries(file)
+                val entries = roseNGLog.timed(TAG, "openArchive ${file.name}", { e -> "${e.size} entries" }) {
+                    ArchiveManager.readEntries(file)
+                }
                 if (entries.isEmpty()) {
                     throw Exception("Failed to read any entries from the archive.")
                 }
@@ -2160,7 +1214,6 @@ class RoseViewModel(application: Application) : AndroidViewModel(application) {
                     if (requestGeneration == filesGeneration) {
                         errorMessage = "Failed to open archive: ${e.message}"
                         currentZipFile = null
-                        // If opening archive fails, try to load the parent folder instead
                         loadFiles(currentPath)
                     }
                 }
@@ -2219,23 +1272,10 @@ class RoseViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    // Builds the direct children (files + subfolders) of `dirPath` from the
-    // already-read entry list, synthesizing folders for entries that never
-    // got an explicit directory entry in the zip. No disk I/O - the central
-    // directory was already read once in openArchive, so this is instant.
     private fun buildZipDirectoryListing(entries: List<RoseArchiveEntry>, dirPath: String, zipFile: File): List<FileItem> {
         val prefix = dirPath.trim('/').let { if (it.isEmpty()) "" else "$it/" }
         val children = LinkedHashMap<String, FileItem>()
 
-        // Tracks, for each direct subfolder of this level, the distinct names
-        // of ITS OWN direct children (files or subfolders one level deeper).
-        // A Set (not a running count) is essential here: a subfolder can have
-        // many entries nested under it at various depths, but they all belong
-        // to the same handful of immediate children - e.g. 50 files inside
-        // "Photos/2024/" should make "2024" count as 1 item under "Photos",
-        // not 50. Without this, every folder's "N items" label read 0
-        // (FileItem.itemCount defaults to null/0, since the entries below
-        // were never populating it at all) no matter what was really inside.
         val directChildNames = HashMap<String, MutableSet<String>>()
         val directChildSizes = HashMap<String, Long>()
 
@@ -2277,8 +1317,6 @@ class RoseViewModel(application: Application) : AndroidViewModel(application) {
                     directChildSizes[childName] = (directChildSizes[childName] ?: 0L) + entry.size
                 }
 
-                // Everything after childName's own slash, up to its next
-                // slash (or the end), is one direct child of childName.
                 val grandRemainder = remainder.substring(slashIndex + 1)
                 if (grandRemainder.isNotEmpty()) {
                     val grandSlash = grandRemainder.indexOf('/')
@@ -2300,8 +1338,6 @@ class RoseViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    // Browses into a subfolder of the currently open zip using the cached
-    // entry list - purely in-memory, no re-reading of the archive.
     fun navigateZipInto(entryPath: String) {
         val zipFile = currentZipFile ?: return
         exitSelectionMode()
@@ -2309,8 +1345,6 @@ class RoseViewModel(application: Application) : AndroidViewModel(application) {
         files = sortFileList(buildZipDirectoryListing(zipEntriesCache, entryPath, zipFile))
     }
 
-    // Steps one level up within the open zip. Returns false once already at
-    // the archive root, so the caller can fall back to exiting the archive.
     fun navigateZipUp(): Boolean {
         val zipFile = currentZipFile ?: return false
         if (currentZipEntryPath.isEmpty()) return false
@@ -2322,7 +1356,6 @@ class RoseViewModel(application: Application) : AndroidViewModel(application) {
         return true
     }
 
-
     fun clearExtraction() {
         extractionSource = null
         extractionEntries = null
@@ -2333,7 +1366,7 @@ class RoseViewModel(application: Application) : AndroidViewModel(application) {
         extractionEntries = entries
         clipboardFiles.clear()
         clipboardSourceZip = null
-        isCopyOperation = true // Reuse the "Paste" FAB logic
+        isCopyOperation = true
     }
 
     fun startExtraction(
@@ -2366,79 +1399,25 @@ class RoseViewModel(application: Application) : AndroidViewModel(application) {
         clearExtraction()
     }
 
-    private fun fetchRecentFileItems(): List<FileItem> {
-        val recents = mutableListOf<FileItem>()
-        try {
-            val projection = arrayOf(
-                MediaStore.MediaColumns.DATA,
-                MediaStore.MediaColumns.DISPLAY_NAME,
-                MediaStore.MediaColumns.SIZE,
-                MediaStore.MediaColumns.DATE_MODIFIED,
-                MediaStore.MediaColumns.MIME_TYPE
-            )
-            val queryUri = MediaStore.Files.getContentUri("external")
+    private suspend fun fetchRecentFileItems(): List<FileItem> =
+        roseNGLog.timed(TAG, "loadRecentFiles (limit=$recentFilesLimit)", { r -> "${r.size} items" }) {
+            mediaStoreRepository.recentFiles(recentFilesLimit, excludedFolders)
+        }
 
-            // Exclude hidden files and folders
-            val selection = "(${MediaStore.MediaColumns.DATA} NOT LIKE '%/.%' AND ${MediaStore.MediaColumns.DATA} NOT LIKE '.%')"
-
-            getApplication<Application>().contentResolver.query(
-                queryUri,
-                projection,
-                selection,
-                null,
-                "${MediaStore.Files.FileColumns.DATE_MODIFIED} DESC"
-            )?.use { cursor ->
-                val dataCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DATA)
-                val nameCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DISPLAY_NAME)
-                val sizeCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.SIZE)
-                val dateCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DATE_MODIFIED)
-                val mimeCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.MIME_TYPE)
-
-                var count = 0
-                val limit = recentFilesLimit
-                val excluded = excludedFolders.toList()
-                while (cursor.moveToNext() && count < limit) {
-                    val path = cursor.getString(dataCol) ?: continue
-
-                    // Filter out excluded folders
-                    if (excluded.any { path.startsWith("$it/") || path == it }) continue
-
-                    val file = File(path)
-                    if (file.exists() && file.isFile) {
-                        val name = cursor.getString(nameCol) ?: file.name
-                        val size = cursor.getLong(sizeCol)
-                        val date = cursor.getLong(dateCol) * 1000
-                        val mime = cursor.getString(mimeCol)
-
-                        val extension = file.extension.lowercase()
-                        recents.add(FileItem(
-                            file = file,
-                            isDirectory = false,
-                            name = name,
-                            size = size,
-                            lastModified = date,
-                            extension = extension,
-                            mimeType = mime
-                        ))
-                        count++
-                    }
-                }
-            }
-        } catch (e: Exception) {}
-        return recents
-    }
+    private var recentFilesKey: Triple<Long, Set<String>, Int>? = null
 
     fun loadRecentFiles() {
         stopWatchingDirectory()
         accessDenied = false
-        // Material Files style: don't clear the list before loading. Keeps the UI stable
-        // and preserves scroll position while the background query is running.
         if (recentFiles.isEmpty()) isRecentLoading = true
         viewModelScope.launch(Dispatchers.IO) {
             try {
+                val key = Triple(mediaStoreRepository.generation(), excludedFolders, recentFilesLimit)
+                if (key.first >= 0 && key == recentFilesKey && recentFiles.isNotEmpty()) return@launch
                 val recents = fetchRecentFileItems()
                 withContext(Dispatchers.Main) {
                     recentFiles = recents
+                    recentFilesKey = key
                     saveCachedRecentFiles(recents)
                 }
             } finally {
@@ -2460,12 +1439,10 @@ class RoseViewModel(application: Application) : AndroidViewModel(application) {
         } else {
             ShizukuManager.normalize(directory.absolutePath)
         }
-        // Never allow navigating directly to raw "/storage" directory on non-rooted devices
         if (!useRoot && normalizedPath == "/storage") return
 
         val isRootPath = normalizedPath == "/" || (useRoot && RootManager.isRootPath(normalizedPath))
-        // If isActuallyDirectory is true, we trust the caller (e.g. from FileItem)
-        val isKnownStorage = storageDevices.any { it.path == normalizedPath }
+        val isKnownStorage = storage.storageDevices.any { it.path == normalizedPath }
         val isSaf = SafManager.isSafUri(normalizedPath)
         val shouldNavigate = isSaf || isActuallyDirectory || isKnownStorage || isRootPath || File(normalizedPath).isDirectory ||
                 (SafManager.isRestrictedPath(normalizedPath) &&
@@ -2515,11 +1492,7 @@ class RoseViewModel(application: Application) : AndroidViewModel(application) {
         val currentFile = File(currentPath)
         val parent = currentFile.parentFile
 
-        // Relaxed permission check: if the folder exists or is a known restricted path or root path,
-        // we attempt to navigate to it. loadFiles() handles the actual permission
-        // check (SAF/Shizuku/Normal) once we get there.
         val isRootParent = parent != null && (parent.absolutePath == "/" || (useRoot && RootManager.isRootPath(parent.absolutePath)))
-        // Do not allow navigating up into raw "/storage" on non-rooted devices
         if (!useRoot && parent?.absolutePath == "/storage") {
             return false
         }
@@ -2533,7 +1506,6 @@ class RoseViewModel(application: Application) : AndroidViewModel(application) {
         return false
     }
 
-    // Selection logic
     fun toggleSelection(fileItem: FileItem) {
         if (selectedFiles.contains(fileItem)) {
             selectedFiles.remove(fileItem)
@@ -2546,9 +1518,6 @@ class RoseViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    // Explicit set (rather than toggle), used by the checkbox swipe-to-select
-    // gesture where a single drag needs to force every item it passes over
-    // to the same target state (all selected, or all deselected).
     fun setSelected(fileItem: FileItem, selected: Boolean) {
         if (selected) {
             if (!selectedFiles.contains(fileItem)) {
@@ -2564,11 +1533,6 @@ class RoseViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /**
-     * Bulk-updates selection for a range of files during a drag-select gesture.
-     * Items within [start]..[end] are set to [target] state, while items outside
-     * this range are reverted to their [initialPaths] state.
-     */
     fun setSelectedRange(files: List<FileItem>, start: Int, end: Int, target: Boolean, initialPaths: Set<String>) {
         val rangePaths = mutableSetOf<String>()
         for (i in start..end) {
@@ -2583,13 +1547,10 @@ class RoseViewModel(application: Application) : AndroidViewModel(application) {
             initialPaths - rangePaths
         }
 
-        // Use a set for O(1) lookups during the sync
         val currentPaths = selectedFiles.map { it.file.absolutePath }.toSet()
 
-        // 1. Remove items that should no longer be selected
         selectedFiles.removeAll { it.file.absolutePath !in newSelectionPaths }
 
-        // 2. Add items that are now selected but weren't before
         val toAdd = files.filter { it.file.absolutePath in newSelectionPaths && it.file.absolutePath !in currentPaths }
         if (toAdd.isNotEmpty()) {
             selectedFiles.addAll(toAdd)
@@ -2614,7 +1575,6 @@ class RoseViewModel(application: Application) : AndroidViewModel(application) {
         isSelectionMode = true
     }
 
-    // Clipboard logic
     fun copySingle(fileItem: FileItem) {
         clipboardFiles.clear()
         clipboardFiles.add(fileItem)
@@ -2635,18 +1595,12 @@ class RoseViewModel(application: Application) : AndroidViewModel(application) {
     fun copySelected() {
         clipboardFiles.clear()
         clipboardFiles.addAll(selectedFiles)
-        // Snapshot which archive (if any) these entries came from *now*,
-        // because currentZipFile gets reset to null as soon as the user
-        // navigates anywhere else - relying on it at paste time was the
-        // cause of the crash when pasting outside an opened zip.
         clipboardSourceZip = currentZipFile
         isCopyOperation = true
         exitSelectionMode()
     }
 
     fun moveSelected() {
-        // Cut/move doesn't make sense for virtual zip entries - there's no
-        // real file to move, only an archive entry to extract.
         if (currentZipFile != null) return
         clipboardFiles.clear()
         clipboardFiles.addAll(selectedFiles)
@@ -2657,7 +1611,6 @@ class RoseViewModel(application: Application) : AndroidViewModel(application) {
 
     fun compressSelected(archiveName: String, format: ArchiveFormat = ArchiveFormat.ZIP, passphrase: String? = null) {
         val filesToZip = selectedFiles.toList()
-        // If in a category, currentPath is "", so we default to the standard Downloads folder.
         val baseDir = currentPath.ifEmpty {
             File(Environment.getExternalStorageDirectory(), "Download").absolutePath
         }
@@ -2688,7 +1641,6 @@ class RoseViewModel(application: Application) : AndroidViewModel(application) {
 
         if (sourceZip != null) {
             val passphrase = if (sourceZip == currentZipFile) cachedZipPassword else null
-            // Zip extraction still handled in ViewModel for now or could be a job too
             viewModelScope.launch(Dispatchers.IO) {
                 isLoading = true
                 val extractedDests = mutableListOf<File>()
@@ -2709,7 +1661,7 @@ class RoseViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
         } else {
-            if (targetDir.isEmpty() || categoryFilterType != null) {
+            if (targetDir.isEmpty() || categories.categoryFilterType != null) {
                 android.widget.Toast.makeText(getApplication(), R.string.toast_cannot_paste_here, android.widget.Toast.LENGTH_SHORT).show()
                 return
             }
@@ -2719,7 +1671,6 @@ class RoseViewModel(application: Application) : AndroidViewModel(application) {
                 return
             }
 
-            // Moving into the same folder validation
             if (!copying) {
                 val allInSameFolder = itemsToPaste.all { item ->
                     val parent = item.file.parent ?: ""
@@ -2731,7 +1682,6 @@ class RoseViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
 
-            // Recursive nesting validation (cannot copy/move a directory into itself or any of its subdirectories)
             val recursiveItem = itemsToPaste.find { item ->
                 item.isDirectory && SafManager.isSubdirectoryOrSame(targetDir, item.file.absolutePath)
             }
@@ -2741,7 +1691,6 @@ class RoseViewModel(application: Application) : AndroidViewModel(application) {
                 return
             }
 
-            // Filter out items that are already in targetDir for Move operation
             val effectiveItems = if (!copying) {
                 itemsToPaste.filterNot { item ->
                     val parent = item.file.parent ?: ""
@@ -2776,22 +1725,11 @@ class RoseViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    // Extracts a single entry, or - when entryName is a folder - every entry
-    // nested under it, preserving the folder's internal structure under dest.
-    //
-    // Security note: a zip entry's name is attacker-controlled data (the zip
-    // may have been downloaded, shared, or extracted from an untrusted
-    // source) and can contain "../" segments or an absolute path. Without a
-    // containment check, a crafted entry like "../../../../data/data/dev.
-    // narayan.rose/some_file" would resolve outside `dest` and overwrite
-    // arbitrary app-writable files - a classic "zip slip" vulnerability.
-    // Every resolved path is normalized and verified to stay inside `dest`'s
-    // (for the folder case) canonical directory before anything is written.
     private fun extractEntry(archiveFile: File, entryName: String, dest: File, passphrase: String? = null) {
         try {
             ArchiveManager.extractTo(archiveFile, entryName, dest, passphrase)
         } catch (e: Exception) {
-            e.printStackTrace()
+            roseNGLog.e("Archive", e) { "extractEntry failed for $entryName" }
         }
     }
 
@@ -2816,7 +1754,7 @@ class RoseViewModel(application: Application) : AndroidViewModel(application) {
         val sources = itemsToDelete.map { it.file.absolutePath }
         val names = itemsToDelete.map { it.name }
 
-        val isCloud = sources.any { isCloudStorage(it) || SafManager.isCloudUri(it) }
+        val isCloud = sources.any { storage.isCloudStorage(it) || SafManager.isCloudUri(it) }
         val hasRoot = sources.any { it == "/" || RootManager.isRootPath(it) }
         val hasRestricted = sources.any { SafManager.isRestrictedPath(it) }
         val canRecycleRestricted = ShizukuManager.isAvailable() && ShizukuManager.hasPermission()
@@ -2830,7 +1768,7 @@ class RoseViewModel(application: Application) : AndroidViewModel(application) {
 
     fun deleteFile(fileItem: FileItem, permanently: Boolean = false) {
         val path = fileItem.file.absolutePath
-        val isCloud = isCloudStorage(path) || SafManager.isCloudUri(path)
+        val isCloud = storage.isCloudStorage(path) || SafManager.isCloudUri(path)
 
         val isRoot = path == "/" || RootManager.isRootPath(path)
         if (isRoot) {
@@ -2878,8 +1816,6 @@ class RoseViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
 
-        // See deleteSelected() above - no optimistic removal, so the item
-        // animates out for real once the job actually completes it.
         if (useRecycleBin && !permanently && !SafManager.isRestrictedPath(path)) {
             dev.narayan.rose.filejob.FileJobService.startRecycle(getApplication(), listOf(path), listOf(fileItem.name))
         } else {
@@ -2888,21 +1824,14 @@ class RoseViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun resetFiles() {
-        // We no longer clear everything here. Instead, we only reset state
-        // that shouldn't persist across views. Clearing `files` causes
-        // a "blank flash" during transitions.
-        categoryTitle = null
-        categoryFilterType = null
-        categoryBucketId = null
+        categories.clear()
         val oldZip = currentZipFile
         cleanupActiveArchiveCache(oldZip)
         currentZipFile = null
         cachedZipPassword = null
         currentZipSourcePath = null
         currentZipEntryPath = ""
-        clearStorageRemovedEvent()
-        categoryJob?.cancel()
-        isCategoryLoading = false
+        storage.clearStorageRemovedEvent()
         isRefreshing = false
         exitSelectionMode()
         safNavStack.clear()
@@ -2991,7 +1920,6 @@ class RoseViewModel(application: Application) : AndroidViewModel(application) {
             val updatedItem = FileItem(newFile)
             rescanForMediaStore(getApplication(), fileItem.file, newFile)
 
-            // Update all visible lists immediately for instant feedback
             files = files.map {
                 if (it.file.absolutePath == fileItem.file.absolutePath) updatedItem else it
             }
@@ -3001,27 +1929,15 @@ class RoseViewModel(application: Application) : AndroidViewModel(application) {
             }
             saveCachedRecentFiles(recentFiles)
 
-            categoryFiles = categoryFiles.map {
-                if (it.file.absolutePath == fileItem.file.absolutePath) updatedItem else it
-            }
-            categoryFilterType?.let { categoryCache[it to categoryBucketId] = categoryFiles }
+            categories.replaceItem(fileItem.file.absolutePath, updatedItem)
 
-            val searchIndex = searchResults.indexOfFirst { it.file.absolutePath == fileItem.file.absolutePath }
-            if (searchIndex != -1) {
-                searchResults[searchIndex] = updatedItem
-            }
+            search.replaceItem(fileItem.file.absolutePath, updatedItem)
 
-            // If we're in a normal directory, re-sort to keep order correct
-            if (categoryFilterType == null && currentPath.isNotEmpty()) {
+            if (categories.categoryFilterType == null && currentPath.isNotEmpty()) {
                 files = sortFileList(files)
             }
 
-            val oldNorm = normalizePath(fileItem.file.absolutePath)
-            if (favouriteFiles.any { normalizePath(it) == oldNorm }) {
-                val updatedFavs = favouriteFiles.map { if (normalizePath(it) == oldNorm) newFile.absolutePath else it }
-                favouriteFiles = updatedFavs
-                settings.favouriteFiles = updatedFavs
-            }
+            favourites.onFileRenamed(fileItem.file.absolutePath, newFile.absolutePath)
         } else {
             errorMessage = "Couldn't rename folder. It might be in use or restricted."
         }
@@ -3212,7 +2128,6 @@ class RoseViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
 
-                // Extract to a subfolder named after the archive
                 val fileName = getFileNameFromUri(uri) ?: "extracted"
                 val folderName = fileName.substringBeforeLast(".")
                 val finalDestPath = if (folderName.isNotEmpty()) "${destPath.trimEnd('/')}/$folderName" else destPath
@@ -3238,11 +2153,6 @@ class RoseViewModel(application: Application) : AndroidViewModel(application) {
                     if (!destDir.exists()) destDir.mkdirs()
                     val destCanonicalPath = destDir.canonicalPath
 
-                    // Zip slip guard: an entry name is attacker-controlled data (the
-                    // archive may be from an untrusted source) and can contain "../"
-                    // segments or an absolute path. Without this check, a crafted entry
-                    // could resolve outside destDir and overwrite arbitrary app-writable
-                    // files. Same protection ArchiveManager.extractTo already applies.
                     ArchiveManager.extractAll(tempFile) { name, isDirectory, copyTask ->
                         val entryFile = File(destDir, name)
                         val entryCanonicalPath = entryFile.canonicalPath
@@ -3285,7 +2195,6 @@ class RoseViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
             } catch (e: Exception) {
-                // DocumentsProvider throws UnsupportedOperationException if uri cannot be queried directly
             }
         }
         if (result == null) {
@@ -3296,705 +2205,12 @@ class RoseViewModel(application: Application) : AndroidViewModel(application) {
         return result
     }
 
-    // ----- Category browsing (Home screen) -----
-
-    var categoryTitle by mutableStateOf<String?>(null)
-        private set
-
-    var categoryFilterType by mutableStateOf<FileType?>(null)
-        private set
-
-    var categoryBucketId by mutableStateOf<String?>(null)
-        private set
-
-    var isCategoryLoading by mutableStateOf(false)
-        private set
-
     var isRecentLoading by mutableStateOf(false)
         private set
-
-    private var categoryJob: Job? = null
-    private val categoryCache = mutableMapOf<Pair<FileType, String?>, List<FileItem>>()
-    private val categoryCacheTime = mutableMapOf<Pair<FileType, String?>, Long>()
-
-    fun invalidateCategoryCache(type: FileType? = null) {
-        if (type != null) {
-            categoryCache.keys.filter { it.first == type }.forEach {
-                categoryCache.remove(it)
-                categoryCacheTime.remove(it)
-            }
-        } else {
-            categoryCache.clear()
-            categoryCacheTime.clear()
-        }
-    }
-
-    var categoryCounts by mutableStateOf<Map<FileType, Int>>(
-        settings.cachedCategoryCounts.mapNotNull { (key, count) ->
-            try {
-                FileType.valueOf(key) to count
-            } catch (e: IllegalArgumentException) {
-                null
-            }
-        }.toMap()
-    )
-        private set
-
-    var isCategoryCountsLoading by mutableStateOf(false)
-        private set
-
-    /** Optimized counting using a single MediaStore query */
-    private var lastCategoryLoadTime = 0L
-    fun loadCategoryCounts(force: Boolean = false) {
-        if (isCategoryCountsLoading) return
-
-        val now = System.currentTimeMillis()
-        if (categoryCounts.isNotEmpty() && !force && (now - lastCategoryLoadTime < 30000)) return
-
-        viewModelScope.launch(Dispatchers.IO) {
-            isCategoryCountsLoading = true
-            lastCategoryLoadTime = now
-            val counts = mutableMapOf(
-                FileType.IMAGE to 0,
-                FileType.VIDEO to 0,
-                FileType.AUDIO to 0,
-                FileType.PDF to 0,
-                FileType.APK to 0,
-                FileType.ZIP to 0,
-                FileType.DOCUMENT to 0
-            )
-            val resolver = getApplication<Application>().contentResolver
-
-            val hardcodedExcluded = listOf(".thumbnails", "Android/data", "Android/obb")
-            val userExcluded = excludedFolders.toList()
-
-            val excludeSelection = (hardcodedExcluded.map { "${MediaStore.MediaColumns.DATA} NOT LIKE '%/$it/%'" } +
-                    userExcluded.map {
-                        val escaped = it.replace("'", "''")
-                        "(${MediaStore.MediaColumns.DATA} NOT LIKE '$escaped/%' AND ${MediaStore.MediaColumns.DATA} != '$escaped')"
-                    }).joinToString(" AND ")
-
-            // Exclude hidden files and folders
-            val noHiddenSelection = "(${MediaStore.MediaColumns.DATA} NOT LIKE '%/.%' AND ${MediaStore.MediaColumns.DATA} NOT LIKE '.%')"
-
-            val finalSelection = if (excludeSelection.isNotEmpty()) {
-                "${MediaStore.MediaColumns.DATA} IS NOT NULL AND ($excludeSelection) AND ($noHiddenSelection)"
-            } else {
-                "${MediaStore.MediaColumns.DATA} IS NOT NULL AND ($noHiddenSelection)"
-            }
-
-            val imageExts = setOf("jpg", "jpeg", "png", "webp", "gif", "bmp", "heic", "heif")
-            val videoExts = setOf("mp4", "mkv", "mov", "avi", "3gp", "flv", "wmv")
-            val audioExts = setOf("mp3", "wav", "ogg", "m4a", "flac", "aac")
-            val zipExts = setOf("zip", "rar", "7z", "tar", "gz")
-
-            fun isDoc(mime: String, ext: String): Boolean {
-                if (mime.startsWith("text/", ignoreCase = true) ||
-                    mime == "text/markdown" || mime == "text/x-markdown" ||
-                    mime.startsWith("application/vnd.ms-", ignoreCase = true) ||
-                    mime.startsWith("application/vnd.openxmlformats-officedocument", ignoreCase = true)
-                ) return true
-
-                return ext == "txt" || ext == "md" || ext == "markdown" || ext == "pdf" || ext == "rtf" ||
-                        ext.startsWith("doc") || ext.startsWith("xls") || ext.startsWith("ppt")
-            }
-
-            try {
-                val uri = MediaStore.Files.getContentUri("external")
-                val projection = arrayOf(
-                    MediaStore.MediaColumns.DATA,
-                    MediaStore.MediaColumns.MIME_TYPE,
-                    MediaStore.Files.FileColumns.MEDIA_TYPE
-                )
-
-                resolver.query(uri, projection, finalSelection, null, null)?.use { cursor ->
-                    val dataCol = cursor.getColumnIndex(MediaStore.MediaColumns.DATA)
-                    val mimeCol = cursor.getColumnIndex(MediaStore.MediaColumns.MIME_TYPE)
-                    val mediaTypeCol = cursor.getColumnIndex(MediaStore.Files.FileColumns.MEDIA_TYPE)
-
-                    while (cursor.moveToNext()) {
-                        val data = if (dataCol >= 0) cursor.getString(dataCol) ?: "" else ""
-                        if (data.isEmpty()) continue
-
-                        val mimeType = if (mimeCol >= 0) cursor.getString(mimeCol) ?: "" else ""
-                        val mediaType = if (mediaTypeCol >= 0) cursor.getInt(mediaTypeCol) else 0
-
-                        val ext = data.substringAfterLast('.', "").lowercase()
-
-                        // Apply the WhatsApp/Telegram exclusion in-memory only for Image/Video/Audio
-                        val isSocialExcluded = data.contains("/WhatsApp/Media/", ignoreCase = true) ||
-                                data.contains("/Telegram/", ignoreCase = true)
-
-                        if (!isSocialExcluded) {
-                            if (mediaType == MediaStore.Files.FileColumns.MEDIA_TYPE_IMAGE || ext in imageExts) {
-                                counts[FileType.IMAGE] = counts[FileType.IMAGE]!! + 1
-                            }
-                            if (mediaType == MediaStore.Files.FileColumns.MEDIA_TYPE_VIDEO || ext in videoExts) {
-                                counts[FileType.VIDEO] = counts[FileType.VIDEO]!! + 1
-                            }
-                            if (mediaType == MediaStore.Files.FileColumns.MEDIA_TYPE_AUDIO || ext in audioExts) {
-                                counts[FileType.AUDIO] = counts[FileType.AUDIO]!! + 1
-                            }
-                        }
-
-                        if (mimeType.equals("application/pdf", ignoreCase = true) || ext == "pdf") {
-                            counts[FileType.PDF] = counts[FileType.PDF]!! + 1
-                        }
-                        if (mimeType.equals("application/vnd.android.package-archive", ignoreCase = true) || ext == "apk") {
-                            counts[FileType.APK] = counts[FileType.APK]!! + 1
-                        }
-                        if (ext in zipExts) {
-                            counts[FileType.ZIP] = counts[FileType.ZIP]!! + 1
-                        }
-                        if (isDoc(mimeType, ext)) {
-                            counts[FileType.DOCUMENT] = counts[FileType.DOCUMENT]!! + 1
-                        }
-                    }
-                }
-            } catch (e: Throwable) {
-                // Ignore query error, counts remain default/empty
-            }
-
-            settings.cachedCategoryCounts = counts.mapKeys { it.key.name }
-
-            withContext(Dispatchers.Main) {
-                categoryCounts = counts
-                isCategoryCountsLoading = false
-            }
-
-        }
-    }
-
-    fun browseCategory(type: FileType, title: String, bucketId: String? = null, forceRefresh: Boolean = false) {
-        val sameListing = categoryFilterType == type && categoryTitle == title && categoryBucketId == bucketId
-        val now = System.currentTimeMillis()
-        val cacheKey = type to bucketId
-        val cached = categoryCache[cacheKey]
-        val cacheAge = now - (categoryCacheTime[cacheKey] ?: 0L)
-
-        // Check to avoid re-querying if already showing and within suppression window
-        if (!forceRefresh && sameListing && categoryFiles.isNotEmpty() && now < suppressSilentRefreshUntil) {
-            return
-        }
-
-        stopWatchingDirectory()
-        accessDenied = false
-        currentZipFile = null
-        currentZipEntryPath = ""
-        categoryTitle = title
-        categoryFilterType = type
-        categoryBucketId = bucketId
-        currentPath = ""
-        if (!forceRefresh) {
-            isRefreshing = false
-        }
-
-        // Instant display from cache if available
-        if (cached != null) {
-            categoryFiles = cached
-            if (!forceRefresh && cacheAge < 30_000L) {
-                // Highly fresh, no need to re-query
-                isCategoryLoading = false
-                isRefreshing = false
-                return
-            }
-        } else {
-            // Not in cache: clear and show loading state
-            categoryFiles = emptyList()
-            isCategoryLoading = true
-        }
-
-        categoryJob?.cancel()
-        val requestGeneration = ++categoryGeneration
-        categoryJob = viewModelScope.launch(Dispatchers.IO) {
-            try {
-                val results = mutableListOf<FileItem>()
-                val queryUri = MediaStore.Files.getContentUri("external")
-                val projection = mutableListOf(
-                    MediaStore.MediaColumns.DATA,
-                    MediaStore.MediaColumns.DISPLAY_NAME,
-                    MediaStore.MediaColumns.SIZE,
-                    MediaStore.MediaColumns.DATE_MODIFIED,
-                    MediaStore.MediaColumns.MIME_TYPE
-                )
-
-                if (type == FileType.IMAGE) {
-                    projection.add(MediaStore.Images.Media.BUCKET_ID)
-                    projection.add(MediaStore.Images.Media.BUCKET_DISPLAY_NAME)
-                }
-
-                var categorySelection = when (type) {
-                    FileType.IMAGE -> "${MediaStore.Files.FileColumns.MEDIA_TYPE} = ${MediaStore.Files.FileColumns.MEDIA_TYPE_IMAGE} OR ${MediaStore.MediaColumns.DATA} LIKE '%.jpg' OR ${MediaStore.MediaColumns.DATA} LIKE '%.jpeg' OR ${MediaStore.MediaColumns.DATA} LIKE '%.png' OR ${MediaStore.MediaColumns.DATA} LIKE '%.webp' OR ${MediaStore.MediaColumns.DATA} LIKE '%.JPG' OR ${MediaStore.MediaColumns.DATA} LIKE '%.JPEG'"
-                    FileType.VIDEO -> "${MediaStore.Files.FileColumns.MEDIA_TYPE} = ${MediaStore.Files.FileColumns.MEDIA_TYPE_VIDEO} OR ${MediaStore.MediaColumns.DATA} LIKE '%.mp4' OR ${MediaStore.MediaColumns.DATA} LIKE '%.mkv' OR ${MediaStore.MediaColumns.DATA} LIKE '%.MP4'"
-                    FileType.AUDIO -> "${MediaStore.Files.FileColumns.MEDIA_TYPE} = ${MediaStore.Files.FileColumns.MEDIA_TYPE_AUDIO} OR ${MediaStore.MediaColumns.DATA} LIKE '%.mp3' OR ${MediaStore.MediaColumns.DATA} LIKE '%.m4a' OR ${MediaStore.MediaColumns.DATA} LIKE '%.MP3'"
-                    FileType.PDF -> "${MediaStore.Files.FileColumns.MIME_TYPE} = 'application/pdf' OR ${MediaStore.MediaColumns.DATA} LIKE '%.pdf' OR ${MediaStore.MediaColumns.DATA} LIKE '%.PDF'"
-                    FileType.APK -> "${MediaStore.Files.FileColumns.MIME_TYPE} = 'application/vnd.android.package-archive' OR ${MediaStore.MediaColumns.DATA} LIKE '%.apk' OR ${MediaStore.MediaColumns.DATA} LIKE '%.APK'"
-                    FileType.ZIP -> "${MediaStore.MediaColumns.DATA} LIKE '%.zip' OR ${MediaStore.MediaColumns.DATA} LIKE '%.rar' OR ${MediaStore.MediaColumns.DATA} LIKE '%.7z' OR ${MediaStore.MediaColumns.DATA} LIKE '%.tar' OR ${MediaStore.MediaColumns.DATA} LIKE '%.gz' OR ${MediaStore.MediaColumns.DATA} LIKE '%.ZIP'"
-                    FileType.DOCUMENT -> "${MediaStore.Files.FileColumns.MIME_TYPE} LIKE 'text/%' OR ${MediaStore.Files.FileColumns.MIME_TYPE} = 'text/markdown' OR ${MediaStore.Files.FileColumns.MIME_TYPE} = 'text/x-markdown' OR ${MediaStore.Files.FileColumns.MIME_TYPE} LIKE 'application/vnd.ms-%' OR ${MediaStore.Files.FileColumns.MIME_TYPE} LIKE 'application/vnd.openxmlformats-officedocument%' OR ${MediaStore.MediaColumns.DATA} LIKE '%.txt' OR ${MediaStore.MediaColumns.DATA} LIKE '%.md' OR ${MediaStore.MediaColumns.DATA} LIKE '%.MD' OR ${MediaStore.MediaColumns.DATA} LIKE '%.markdown' OR ${MediaStore.MediaColumns.DATA} LIKE '%.doc%' OR ${MediaStore.MediaColumns.DATA} LIKE '%.xls%' OR ${MediaStore.MediaColumns.DATA} LIKE '%.ppt%' OR ${MediaStore.MediaColumns.DATA} LIKE '%.pdf' OR ${MediaStore.MediaColumns.DATA} LIKE '%.rtf' OR ${MediaStore.MediaColumns.DATA} LIKE '%.TXT' OR ${MediaStore.MediaColumns.DATA} LIKE '%.DOC%' OR ${MediaStore.MediaColumns.DATA} LIKE '%.PDF'"
-                    else -> null
-                }
-
-                if (type == FileType.IMAGE && bucketId != null) {
-                    val safeBucketId = bucketId.replace("'", "''")
-                    categorySelection = "($categorySelection) AND (${MediaStore.Images.Media.BUCKET_ID} = '$safeBucketId')"
-                }
-
-                val hardcodedExcluded = if (type == FileType.ZIP || type == FileType.DOCUMENT || type == FileType.PDF || type == FileType.APK) {
-                    listOf(".thumbnails", "Android/data", "Android/obb")
-                } else {
-                    listOf("WhatsApp/Media", "Telegram", ".thumbnails", "Android/data", "Android/obb")
-                }
-
-                val userExcluded = excludedFolders.toList()
-
-                val excludeSelection = (hardcodedExcluded.map { "${MediaStore.MediaColumns.DATA} NOT LIKE '%/$it/%'" } +
-                        userExcluded.map {
-                            val escaped = it.replace("'", "''")
-                            "(${MediaStore.MediaColumns.DATA} NOT LIKE '$escaped/%' AND ${MediaStore.MediaColumns.DATA} != '$escaped')"
-                        }).joinToString(" AND ")
-
-                // Exclude hidden files and folders
-                val noHiddenSelection = "(${MediaStore.MediaColumns.DATA} NOT LIKE '%/.%' AND ${MediaStore.MediaColumns.DATA} NOT LIKE '.%')"
-
-                val selection = if (categorySelection != null) {
-                    "($categorySelection) AND ($excludeSelection) AND ($noHiddenSelection)"
-                } else {
-                    "($excludeSelection) AND ($noHiddenSelection)"
-                }
-
-                val albumMap = mutableMapOf<String, Pair<String, Int>>() // BucketID -> (BucketName, Count)
-                val albumLastModified = mutableMapOf<String, Long>()
-                val albumThumbnail = mutableMapOf<String, String>()
-
-                getApplication<Application>().contentResolver.query(queryUri, projection.toTypedArray(), selection, null, "${MediaStore.Files.FileColumns.DATE_MODIFIED} DESC")?.use { cursor ->
-                    val dataCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DATA)
-                    val nameCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DISPLAY_NAME)
-                    val sizeCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.SIZE)
-                    val dateCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DATE_MODIFIED)
-                    val mimeCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.MIME_TYPE)
-
-                    val bucketIdCol = if (type == FileType.IMAGE) cursor.getColumnIndex(MediaStore.Images.Media.BUCKET_ID) else -1
-                    val bucketNameCol = if (type == FileType.IMAGE) cursor.getColumnIndex(MediaStore.Images.Media.BUCKET_DISPLAY_NAME) else -1
-
-                    while (cursor.moveToNext()) {
-                        ensureActive()
-                        val path = cursor.getString(dataCol) ?: continue
-                        val date = cursor.getLong(dateCol) * 1000
-                        val bId = if (bucketIdCol != -1) cursor.getString(bucketIdCol) else null
-
-                        if (type == FileType.IMAGE && bucketId == null) {
-                            val id = bId ?: "unknown"
-                            val bName = cursor.getString(bucketNameCol) ?: getApplication<Application>().getString(R.string.album_unknown)
-                            val current = albumMap.getOrDefault(id, bName to 0)
-                            albumMap[id] = bName to (current.second + 1)
-                            if (date > (albumLastModified[id] ?: 0L)) {
-                                albumLastModified[id] = date
-                                albumThumbnail[id] = path
-                            }
-                            continue
-                        }
-
-                        val name = cursor.getString(nameCol) ?: File(path).name
-                        val size = cursor.getLong(sizeCol)
-                        val mime = cursor.getString(mimeCol)
-
-                        val file = File(path)
-                        if (file.exists()) {
-                            results.add(FileItem(
-                                file = file,
-                                isDirectory = false,
-                                name = name,
-                                size = size,
-                                lastModified = date,
-                                extension = name.substringAfterLast('.', "").lowercase(),
-                                mimeType = mime,
-                                bucketId = bId
-                            ))
-                        }
-                    }
-                }
-
-                if (type == FileType.IMAGE && bucketId == null) {
-                    albumMap.forEach { (id, pair) ->
-                        val bName = pair.first
-                        val bCount = pair.second
-                        val thumbPath = albumThumbnail[id]
-                        val albumDir = if (thumbPath != null) File(thumbPath).parentFile else null
-
-                        results.add(FileItem(
-                            file = albumDir ?: File("album:$id"), // Special path fallback
-                            isDirectory = true,
-                            name = bName,
-                            size = 0,
-                            lastModified = albumLastModified[id] ?: 0L,
-                            extension = "",
-                            itemCount = bCount,
-                            bucketId = id,
-                            thumbnailPath = thumbPath
-                        ))
-                    }
-                }
-
-                ensureActive()
-                val sortedResults = sortFileList(results)
-
-                withContext(Dispatchers.Main) {
-                    if (requestGeneration == categoryGeneration) {
-                        categoryFiles = sortedResults
-                        categoryCache[cacheKey] = sortedResults
-                        categoryCacheTime[cacheKey] = System.currentTimeMillis()
-                    }
-                }
-            } catch (e: CancellationException) {
-                // Ignore cancellation from newer browseCategory or exit
-            } catch (e: Throwable) {
-                withContext(Dispatchers.Main) {
-                    if (requestGeneration == categoryGeneration) {
-                        errorMessage = "Failed to load category: ${e.message}"
-                    }
-                }
-            } finally {
-                withContext(NonCancellable) {
-                    withContext(Dispatchers.Main) {
-                        if (requestGeneration == categoryGeneration) {
-                            isCategoryLoading = false
-                            isRefreshing = false
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    fun exitCategoryMode() {
-        categoryJob?.cancel()
-        isCategoryLoading = false
-        isRefreshing = false
-        categoryTitle = null
-        categoryFilterType = null
-        categoryBucketId = null
-        currentPath = Environment.getExternalStorageDirectory().absolutePath
-    }
-
-    var storageDevices = mutableStateListOf<StorageDevice>()
-        private set
-
-    fun loadStorageDevices() {
-        viewModelScope.launch(Dispatchers.IO) {
-            val devices = mutableListOf<StorageDevice>()
-
-            // 1. Internal Storage
-            val internalFile = Environment.getExternalStorageDirectory()
-            val internalStats = try { StatFs(internalFile.path) } catch (e: Exception) { null }
-            devices.add(
-                StorageDevice.Physical(
-                    name = "Internal Storage",
-                    path = internalFile.absolutePath,
-                    totalBytes = internalStats?.totalBytes ?: 0L,
-                    availableBytes = internalStats?.availableBytes ?: 0L,
-                    isSdCard = false
-                )
-            )
-
-            // 2. SD Cards and other physical volumes (includes USB OTG drives).
-            // Accept both MEDIA_MOUNTED and MEDIA_MOUNTED_READ_ONLY so read-only
-            // FAT32/exFAT drives still appear in the list.
-            val sm = getApplication<Application>().getSystemService(android.content.Context.STORAGE_SERVICE) as android.os.storage.StorageManager
-            sm.storageVolumes.forEach { volume ->
-                val mounted = volume.state == Environment.MEDIA_MOUNTED ||
-                        volume.state == "mounted_ro" // MEDIA_MOUNTED_READ_ONLY constant value
-                if (!volume.isPrimary && mounted) {
-                    val path = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
-                        volume.directory?.absolutePath
-                    } else {
-                        // Fallback for older APIs - this is a bit hacky but often works
-                        // or we could use reflection to call getPath()
-                        try {
-                            val getPath = volume.javaClass.getMethod("getPath")
-                            getPath.invoke(volume) as String
-                        } catch (e: Exception) {
-                            null
-                        }
-                    }
-                    if (path != null) {
-                        // Wrap StatFs in try/catch: FAT32 and some exotic formats
-                        // can throw IllegalArgumentException or IOException here on
-                        // certain devices/kernels. We still add the volume to the
-                        // list so the user can see and open it — sizes just show 0.
-                        val stats = try { StatFs(path) } catch (e: Exception) { null }
-                        val desc = volume.getDescription(getApplication()) ?: "SD Card"
-                        val isUsbVolume = desc.contains("usb", ignoreCase = true) ||
-                                path.contains("usb", ignoreCase = true) ||
-                                path.contains("otg", ignoreCase = true)
-                        devices.add(
-                            StorageDevice.Physical(
-                                name = desc,
-                                path = path,
-                                totalBytes = stats?.totalBytes ?: 0L,
-                                availableBytes = stats?.availableBytes ?: 0L,
-                                isSdCard = volume.isRemovable,
-                                isUsb = isUsbVolume
-                            )
-                        )
-                    }
-                }
-            }
-
-            if (useRoot) {
-                val stats = try { StatFs("/") } catch (e: Exception) { null }
-                devices.add(
-                    StorageDevice.Root(
-                        name = "Root",
-                        path = "/",
-                        totalBytes = stats?.totalBytes ?: 0L,
-                        availableBytes = stats?.availableBytes ?: 0L
-                    )
-                )
-            }
-
-            // 3. User-added DocumentTree / Cloud / External storages
-            val context = getApplication<Application>()
-            val pm = context.packageManager
-            val savedTreeEntries = settings.addedStorageUris
-            savedTreeEntries.forEach { entry ->
-                val parts = entry.split("|::|")
-                val uriString = parts.getOrNull(0) ?: return@forEach
-                val customName = parts.getOrNull(1)?.takeIf { it.isNotBlank() }
-                val typeString = parts.getOrNull(2)
-                val uri = try { Uri.parse(uriString) } catch (e: Exception) { null } ?: return@forEach
-
-                val storageType = when {
-                    typeString != null -> runCatching { CustomStorageType.valueOf(typeString) }.getOrDefault(CustomStorageType.DOCUMENT_TREE)
-                    uriString.startsWith("gdrive://") -> CustomStorageType.GOOGLE_DRIVE
-                    else -> {
-                        val auth = uri.authority ?: ""
-                        when {
-                            auth.contains("docs.storage") || auth.contains("com.google.android.apps.docs") -> CustomStorageType.GOOGLE_DRIVE
-                            else -> CustomStorageType.DOCUMENT_TREE
-                        }
-                    }
-                }
-
-                // Resolve name
-                val docFile = if (uriString.startsWith("content://")) {
-                    try { androidx.documentfile.provider.DocumentFile.fromTreeUri(context, uri) } catch (e: Exception) { null }
-                } else null
-                val docName = docFile?.name
-
-                val authority = uri.authority ?: ""
-                val providerInfo = if (uriString.startsWith("content://")) {
-                    try { pm.resolveContentProvider(authority, 0) } catch (e: Exception) { null }
-                } else null
-                val providerLabel = providerInfo?.loadLabel(pm)?.toString()
-
-                val isCloudStorage = storageType == CustomStorageType.GOOGLE_DRIVE || (uriString.startsWith("content://") &&
-                        authority != "com.android.externalstorage.documents" &&
-                        authority != "com.android.providers.media.documents" &&
-                        authority != "com.android.providers.downloads.documents")
-
-                val defaultTypeName = when (storageType) {
-                    CustomStorageType.GOOGLE_DRIVE -> "Google Drive"
-                    CustomStorageType.ANDROID_DATA -> "Android/data"
-                    CustomStorageType.ANDROID_OBB -> "Android/obb"
-                    else -> if (isCloudStorage) "Google Drive" else "External Storage"
-                }
-
-                val finalName = customName
-                    ?: docName
-                    ?: providerLabel
-                    ?: defaultTypeName
-
-                val isLocked = isStorageLocked(uriString)
-
-                devices.add(
-                    StorageDevice.DocumentTree(
-                        name = finalName,
-                        path = uriString,
-                        totalBytes = 0L,
-                        availableBytes = 0L,
-                        uriString = uriString,
-                        isCloud = isCloudStorage,
-                        providerName = providerLabel ?: defaultTypeName,
-                        storageType = storageType,
-                        isLocked = isLocked
-                    )
-                )
-            }
-
-            withContext(Dispatchers.Main) {
-                storageDevices.clear()
-                storageDevices.addAll(devices)
-
-                if (pendingUsbNavigation) {
-                    val usb = devices.filterIsInstance<StorageDevice.Physical>().firstOrNull { it.isSdCard }
-                    if (usb != null) {
-                        currentPath = usb.path
-                        loadFiles(usb.path)
-                        pendingUsbNavigation = false
-                        // Signal to MainActivity that it should switch to the Files screen
-                        pendingNavigationPath = usb.path
-                    }
-                }
-            }
-        }
-    }
-
-    fun isStorageLocked(path: String): Boolean {
-        val clean = path.replace("://", ":/").trimEnd('/')
-        return settings.lockedStoragePaths.any { lockedPath ->
-            val lockedClean = lockedPath.replace("://", ":/").trimEnd('/')
-            clean == lockedClean || path == lockedPath
-        }
-    }
-
-    fun setStorageLocked(path: String, locked: Boolean) {
-        val current = settings.lockedStoragePaths.toMutableSet()
-        val clean = path.replace("://", ":/").trimEnd('/')
-        if (locked) {
-            current.add(path)
-        } else {
-            current.remove(path)
-            current.removeAll { it.replace("://", ":/").trimEnd('/') == clean }
-        }
-        settings.lockedStoragePaths = current
-        loadStorageDevices()
-    }
-
-    fun addCustomStorage(uri: Uri) {
-        addCustomStorage(uri.toString(), null, CustomStorageType.DOCUMENT_TREE)
-    }
-
-    fun addCustomStorage(
-        uriString: String,
-        customName: String? = null,
-        storageType: CustomStorageType = CustomStorageType.DOCUMENT_TREE
-    ) {
-        viewModelScope.launch(Dispatchers.IO) {
-            if (uriString.startsWith("content://")) {
-                val uri = runCatching { Uri.parse(uriString) }.getOrNull()
-                if (uri != null) {
-                    val flags = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-                    try {
-                        getApplication<Application>().contentResolver.takePersistableUriPermission(uri, flags)
-                    } catch (e: SecurityException) {
-                        try {
-                            getApplication<Application>().contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                        } catch (e2: Exception) {}
-                    }
-                }
-            }
-            val entry = if (!customName.isNullOrBlank()) {
-                "$uriString|::|$customName|::|${storageType.name}"
-            } else {
-                "$uriString|::||::|${storageType.name}"
-            }
-            val current = settings.addedStorageUris
-            if (!current.any { it.substringBefore("|::|") == uriString }) {
-                settings.addedStorageUris = current + entry
-            }
-            loadStorageDevices()
-        }
-    }
-
-    fun removeCustomStorage(uriString: String) {
-        viewModelScope.launch(Dispatchers.IO) {
-            try {
-                val uri = Uri.parse(uriString)
-                val flags = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-                getApplication<Application>().contentResolver.releasePersistableUriPermission(uri, flags)
-            } catch (e: Exception) {}
-            val current = settings.addedStorageUris
-            settings.addedStorageUris = current.filterNot { it.substringBefore("|::|") == uriString }.toSet()
-            val lockedCurrent = settings.lockedStoragePaths
-            settings.lockedStoragePaths = lockedCurrent.filterNot { it == uriString || it.replace("://", ":/").trimEnd('/') == uriString.replace("://", ":/").trimEnd('/') }.toSet()
-            loadStorageDevices()
-        }
-    }
-
-    var pendingUsbNavigation by mutableStateOf(false)
-        private set
-
-    var pendingNavigationPath by mutableStateOf<String?>(null)
-        private set
-
-    fun clearPendingNavigation() {
-        pendingNavigationPath = null
-    }
-
-    fun handleUsbDeviceAttached() {
-        pendingUsbNavigation = true
-        loadStorageDevices()
-    }
-
-    /**
-     * Returns true if [path] lives on a removable physical volume (SD card or
-     * USB OTG drive), or on an added SAF document tree.
-     */
-    fun isRemovableStorage(path: String): Boolean {
-        return storageDevices.any { device ->
-            (device is StorageDevice.Physical &&
-                    device.isSdCard &&
-                    path.startsWith(device.path)) ||
-            (device is StorageDevice.DocumentTree &&
-                    (path == device.path || path.startsWith(device.path)))
-        }
-    }
-
-    /** True if the user is currently browsing a removable storage path. */
-    fun isCurrentPathRemovable(): Boolean = isRemovableStorage(currentPath)
-
-    /**
-     * Returns true if [path] belongs to a remote cloud storage account (e.g. Google Drive, OneDrive).
-     * Physical local storages (Internal, SD Card, USB/Pen drive) return false.
-     */
-    fun isCloudStorage(path: String): Boolean {
-        if (path.startsWith("onedrive://") || path.startsWith("gdrive://") ||
-            path.startsWith("dropbox://") || path.startsWith("mega://") ||
-            path.startsWith("webdav://") || path.startsWith("webdavs://")) {
-            return true
-        }
-        val treeDev = storageDevices.filterIsInstance<StorageDevice.DocumentTree>().firstOrNull { dev ->
-            path == dev.path || path.startsWith(dev.path)
-        }
-        if (treeDev != null) return treeDev.isCloud
-
-        if (!SafManager.isSafUri(path)) return false
-
-        val uri = try { Uri.parse(SafManager.normalizeSafPath(path)) } catch (e: Exception) { null }
-        val authority = uri?.authority ?: ""
-        return authority.isNotEmpty() &&
-                authority != "com.android.externalstorage.documents" &&
-                authority != "com.android.providers.media.documents" &&
-                authority != "com.android.providers.downloads.documents"
-    }
-
-    // One-shot event: set to the ejected volume path when Android broadcasts
-    // MEDIA_REMOVED / MEDIA_UNMOUNTED / MEDIA_EJECT. UI observes this to
-    // navigate away and show a Snackbar, then calls clearStorageRemovedEvent().
-    var storageRemovedEvent by mutableStateOf<String?>(null)
-        private set
-
-    fun onStorageEjected(path: String) {
-        loadStorageDevices()
-        // Only fire the navigate-away event if we are currently inside the ejected volume
-        if (currentPath.startsWith(path)) {
-            storageRemovedEvent = path
-        }
-    }
-
-    fun clearStorageRemovedEvent() {
-        storageRemovedEvent = null
-    }
 
     var offlineFiles: Set<String> by mutableStateOf(settings.offlineFiles)
     val activeJobs = JobManager.activeJobs
 
-
-    // Some cloud providers (Google Drive in particular) report a display
-    // name with no extension for ordinary binary files even when the MIME
-    // type is known - reconstruct it so the saved copy is a real .mp4/.png
-    // on disk instead of an extension-less "unknown file". Used consistently
-    // for save/remove/lookup so all three agree on the actual filename.
     private fun offlineFileName(fileItem: FileItem): String =
         SafManager.ensureFileExtension(fileItem.name, fileItem.mimeType)
 
@@ -4003,7 +2219,6 @@ class RoseViewModel(application: Application) : AndroidViewModel(application) {
             val path = fileItem.file.absolutePath
             val fileName = offlineFileName(fileItem)
             if (isFileOffline(path)) {
-                // Remove from offline
                 val localFile = File(getApplication<Application>().getExternalFilesDir("offline"), fileName)
                 if (localFile.exists()) localFile.delete()
 
@@ -4017,7 +2232,6 @@ class RoseViewModel(application: Application) : AndroidViewModel(application) {
                     files = files.toList()
                 }
             } else {
-                // Save as offline.
                 try {
                     val offlineDir = getApplication<Application>().getExternalFilesDir("offline") ?: return@launch
                     if (!offlineDir.exists()) offlineDir.mkdirs()
@@ -4055,456 +2269,11 @@ class RoseViewModel(application: Application) : AndroidViewModel(application) {
         return if (localFile.exists()) localFile else null
     }
 
-    /** Long-press "remove" for one of the built-in Downloads/Camera/Documents
-     * quick access entries. Identified by a stable id rather than path. */
-    fun removeDefaultQuickAccess(id: String) {
-        val updated = quickAccessRemoved + id
-        quickAccessRemoved = updated
-        settings.quickAccessRemoved = updated
-    }
-
-    fun addQuickAccessFolder(path: String) {
-        if (isFolderInQuickAccess(path)) return
-
-        // If it was a default folder that was previously removed, restore it
-        val defaultId = getDefaultFolderIdForPath(path)
-        if (defaultId != null && quickAccessRemoved.contains(defaultId)) {
-            val updated = quickAccessRemoved - defaultId
-            quickAccessRemoved = updated
-            settings.quickAccessRemoved = updated
-            return
-        }
-
-        val normalized = normalizePath(path)
-        val seen = quickAccessCustomPaths.map { normalizePath(it) }.toSet()
-        if (seen.contains(normalized)) return
-
-        val updated = quickAccessCustomPaths + path
-        quickAccessCustomPaths = updated
-        settings.quickAccessCustomPaths = updated
-    }
-
-    fun removeQuickAccessFolder(path: String) {
-        val normalized = normalizePath(path)
-        val defaultId = getDefaultFolderIdForPath(path)
-        if (defaultId != null) {
-            removeDefaultQuickAccess(defaultId)
-        }
-        val updated = quickAccessCustomPaths.filter { normalizePath(it) != normalized }
-        quickAccessCustomPaths = updated
-        settings.quickAccessCustomPaths = updated
-    }
-
-    fun isFileInFavourites(path: String): Boolean {
-        if (path.isBlank()) return false
-        val normalized = normalizePath(path)
-        return favouriteFiles.any { normalizePath(it) == normalized }
-    }
-
-    fun addFavouriteFile(path: String) {
-        if (path.isBlank() || isFileInFavourites(path)) return
-        val normalized = normalizePath(path)
-        val seen = favouriteFiles.map { normalizePath(it) }.toSet()
-        if (seen.contains(normalized)) return
-
-        val updated = favouriteFiles + path
-        favouriteFiles = updated
-        settings.favouriteFiles = updated
-    }
-
-    fun removeFavouriteFile(path: String) {
-        val normalized = normalizePath(path)
-        val updated = favouriteFiles.filter { normalizePath(it) != normalized }
-        favouriteFiles = updated
-        settings.favouriteFiles = updated
-    }
-
-    fun toggleFavouriteFile(path: String) {
-        if (isFileInFavourites(path)) {
-            removeFavouriteFile(path)
-        } else {
-            addFavouriteFile(path)
-        }
-    }
-
-    fun addFavourites(fileItems: List<FileItem>) {
-        val newPaths = mutableListOf<String>()
-        for (item in fileItems) {
-            if (!item.isDirectory && !isFileInFavourites(item.file.absolutePath)) {
-                newPaths.add(item.file.absolutePath)
-            }
-        }
-        if (newPaths.isNotEmpty()) {
-            val updated = favouriteFiles + newPaths
-            favouriteFiles = updated
-            settings.favouriteFiles = updated
-        }
-    }
-
-    fun removeFavourites(fileItems: List<FileItem>) {
-        val toRemove = fileItems.map { normalizePath(it.file.absolutePath) }.toSet()
-        val updated = favouriteFiles.filter { normalizePath(it) !in toRemove }
-        favouriteFiles = updated
-        settings.favouriteFiles = updated
-    }
-
-    fun getFavouriteFileItems(): List<FileItem> {
-        return favouriteFiles.mapNotNull { path ->
-            val f = File(path)
-            if (f.exists()) {
-                FileItem(f)
-            } else null
-        }
-    }
-
-    // ----- Update Check (GitHub Releases) -----
-
-    companion object {
-        private var autoUpdateCheckedInProcess = false
-        private const val AUTO_UPDATE_INTERVAL_MS = 24 * 60 * 60 * 1000L // 24 hours
-    }
-
-    var updateCheckResult by mutableStateOf<UpdateCheckResult>(UpdateCheckResult.Idle)
-        private set
-
-    fun resetUpdateCheck() {
-        updateCheckResult = UpdateCheckResult.Idle
-    }
-
-    fun dismissUpdateSheet() {
-        cancelUpdateDownload()
-        resetUpdateCheck()
-        runCatching {
-            File(getApplication<Application>().cacheDir, "rose-update.apk").delete()
-        }
-    }
-
-    fun setAutoCheckUpdates(enabled: Boolean) {
-        _autoCheckUpdates.value = enabled
-        settings.autoCheckUpdates = enabled
-        viewModelScope.launch(Dispatchers.IO) {
-            updatePreferences.setAutoCheckEnabled(enabled)
-        }
-    }
-
-    fun skipVersion(versionTag: String) {
-        _skippedVersion.value = versionTag
-        settings.skippedUpdateVersion = versionTag
-        viewModelScope.launch(Dispatchers.IO) {
-            updatePreferences.setSkippedVersion(versionTag)
-        }
-        dismissUpdateSheet()
-    }
-
-    fun performAutoUpdateCheckIfNeeded() {
-        checkForUpdates(isAutoCheck = true)
-    }
-
-    /**
-     * Checks GitHub releases for a newer version.
-     *
-     * @param isAutoCheck When true (e.g. on app launch):
-     * - Respects the [autoCheckUpdates] toggle (makes zero network calls if disabled).
-     * - Only runs once per app process.
-     * - Throttled to at most once every 24 hours using DataStore.
-     * - Fails silently on any network or parsing error.
-     * - Ignores releases already marked as skipped.
-     *
-     * When false (manual button in About):
-     * - Always checks GitHub regardless of toggle or skipped version.
-     * - Shows in-progress, up-to-date, or error states.
-     */
-    fun checkForUpdates(isAutoCheck: Boolean = false) {
-        if (isAutoCheck) {
-            if (!autoCheckUpdates) return
-            if (autoUpdateCheckedInProcess) return
-            autoUpdateCheckedInProcess = true
-        } else {
-            if (updateCheckResult is UpdateCheckResult.Checking) return
-            updateCheckResult = UpdateCheckResult.Checking
-        }
-
-        viewModelScope.launch(Dispatchers.IO) {
-            if (isAutoCheck) {
-                val lastCheck = updatePreferences.getLastCheckTime()
-                val now = System.currentTimeMillis()
-                if (now - lastCheck < AUTO_UPDATE_INTERVAL_MS && lastCheck > 0L) {
-                    return@launch
-                }
-            }
-
-            var connection: HttpURLConnection? = null
-            try {
-                val url = URL("https://api.github.com/repos/NarayanChetri/ROSE/releases/latest")
-                connection = (url.openConnection() as HttpURLConnection).apply {
-                    requestMethod = "GET"
-                    connectTimeout = 10000
-                    readTimeout = 10000
-                }
-
-                if (connection.responseCode == 200) {
-                    val response = connection.inputStream.bufferedReader().readText()
-                    val json = JSONObject(response)
-                    val tagName = json.getString("tag_name")
-                    val body = json.optString("body", "")
-                    val htmlUrl = json.getString("html_url")
-
-                    val assetsList = mutableListOf<ApkSelector.Asset>()
-                    val assets = json.optJSONArray("assets")
-                    if (assets != null) {
-                        for (i in 0 until assets.length()) {
-                            val asset = assets.optJSONObject(i) ?: continue
-                            val name = asset.optString("name")
-                            val downloadUrl = asset.optString("browser_download_url")
-                            if (name.isNotBlank() && downloadUrl.isNotBlank()) {
-                                assetsList.add(ApkSelector.Asset(name, downloadUrl))
-                            }
-                        }
-                    }
-                    val apkUrl = ApkSelector.selectBestApk(assetsList)
-
-                    // Save last check time in DataStore
-                    val now = System.currentTimeMillis()
-                    updatePreferences.setLastCheckTime(now)
-
-                    val currentVersion = BuildConfig.VERSION_NAME
-                    val isUpdateAvailable = SemanticVersion.isNewerVersion(currentVersion, tagName)
-
-                    if (isUpdateAvailable) {
-                        if (isAutoCheck) {
-                            val skipped = updatePreferences.getSkippedVersion() ?: skippedVersion
-                            if (!skipped.isNullOrBlank() && !SemanticVersion.isNewerVersion(skipped, tagName)) {
-                                return@launch
-                            }
-                        }
-
-                        withContext(Dispatchers.Main) {
-                            if (updateDownloadTag != tagName) {
-                                updateDownloadTag = null
-                                updateDownloadState = UpdateDownloadState.Idle
-                            }
-                            updateCheckResult = UpdateCheckResult.UpdateAvailable(
-                                UpdateInfo(tagName, body, htmlUrl, apkUrl)
-                            )
-                        }
-                    } else {
-                        if (!isAutoCheck) {
-                            withContext(Dispatchers.Main) {
-                                updateCheckResult = UpdateCheckResult.UpToDate
-                            }
-                        }
-                    }
-                } else {
-                    if (!isAutoCheck) {
-                        withContext(Dispatchers.Main) {
-                            updateCheckResult = UpdateCheckResult.Error(
-                                getApplication<Application>().getString(R.string.update_check_failed_http, connection.responseCode)
-                            )
-                        }
-                    }
-                }
-            } catch (e: Exception) {
-                if (!isAutoCheck) {
-                    withContext(Dispatchers.Main) {
-                        updateCheckResult = UpdateCheckResult.Error(
-                            e.message ?: getApplication<Application>().getString(R.string.status_unknown_error)
-                        )
-                    }
-                }
-            } finally {
-                connection?.disconnect()
-            }
-        }
-    }
-
-    // ----- Update Download + Install -----
-
-    var updateDownloadState by mutableStateOf<UpdateDownloadState>(UpdateDownloadState.Idle)
-        private set
-
-    // Which release tag `updateDownloadState` refers to - lets checkForUpdates()
-    // tell "this download is for the version we're currently offering" apart
-    // from "this is a leftover from an older check", see checkForUpdates() above.
-    private var updateDownloadTag: String? = null
-
-    private var updateDownloadJob: Job? = null
-
-    /** Downloads the release's .apk asset into the app's cache dir, reporting
-     * progress via [updateDownloadState], then immediately attempts to launch
-     * the system installer on it. Safe to call again after an [UpdateDownloadState.Error]
-     * to retry. */
-    fun downloadAndInstallUpdate(info: UpdateInfo) {
-        val apkUrl = info.apkUrl ?: return
-        if (updateDownloadState is UpdateDownloadState.Downloading) return
-
-        updateDownloadTag = info.tagName
-        updateDownloadState = UpdateDownloadState.Downloading(0L, 0L)
-        updateDownloadJob = viewModelScope.launch(Dispatchers.IO) {
-            val apkFile = File(getApplication<Application>().cacheDir, "rose-update.apk")
-            var connection: HttpURLConnection? = null
-            try {
-                connection = (URL(apkUrl).openConnection() as HttpURLConnection).apply {
-                    connectTimeout = 15000
-                    readTimeout = 15000
-                    instanceFollowRedirects = true
-                    connect()
-                }
-
-                if (connection.responseCode !in 200..299) {
-                    withContext(Dispatchers.Main) {
-                        updateDownloadState = UpdateDownloadState.Error(getApplication<Application>().getString(R.string.update_download_failed_http, connection.responseCode))
-                    }
-                    return@launch
-                }
-
-                val totalBytes = connection.contentLengthLong
-                var downloadedBytes = 0L
-                var lastReportedPercent = -1
-                var lastReportedBytes = 0L
-
-                connection.inputStream.use { input ->
-                    FileOutputStream(apkFile).use { output ->
-                        val buffer = ByteArray(64 * 1024)
-                        while (isActive) {
-                            val read = input.read(buffer)
-                            if (read == -1) break
-                            output.write(buffer, 0, read)
-                            downloadedBytes += read
-                            // When totalBytes is known, only push a state update once the
-                            // displayed percent actually moves. When it's unknown (some
-                            // CDNs omit Content-Length on redirected responses), percent
-                            // is always -1 and would never "move" by that rule, so fall
-                            // back to updating roughly every 256KB instead - either way
-                            // this avoids recomposing the dialog on every 64KB chunk.
-                            val percent = if (totalBytes > 0) ((downloadedBytes * 100) / totalBytes).toInt() else -1
-                            val shouldReport = if (totalBytes > 0) {
-                                percent != lastReportedPercent
-                            } else {
-                                downloadedBytes - lastReportedBytes >= 256 * 1024
-                            }
-                            if (shouldReport) {
-                                lastReportedPercent = percent
-                                lastReportedBytes = downloadedBytes
-                                val bytesSoFar = downloadedBytes
-                                withContext(Dispatchers.Main) {
-                                    updateDownloadState = UpdateDownloadState.Downloading(bytesSoFar, totalBytes)
-                                }
-                            }
-                        }
-                    }
-                }
-
-                if (!isActive) {
-                    apkFile.delete()
-                    return@launch
-                }
-
-                withContext(Dispatchers.Main) {
-                    updateDownloadState = UpdateDownloadState.ReadyToInstall(apkFile)
-                    installApk(apkFile)
-                }
-            } catch (e: CancellationException) {
-                apkFile.delete()
-                throw e
-            } catch (e: Exception) {
-                apkFile.delete()
-                withContext(Dispatchers.Main) {
-                    updateDownloadState = UpdateDownloadState.Error(e.message ?: getApplication<Application>().getString(R.string.update_download_failed))
-                }
-            } finally {
-                connection?.disconnect()
-            }
-        }
-    }
-
-    /** Re-launches the installer for an already-downloaded update - used when
-     * the user comes back from the "allow installs from this source" settings
-     * screen, or dismissed the installer without confirming the first time. */
-    fun installDownloadedUpdate() {
-        val state = updateDownloadState
-        if (state is UpdateDownloadState.ReadyToInstall) {
-            installApk(state.file)
-        }
-    }
-
-    /** Cancels an in-flight update download (e.g. the dialog was dismissed
-     * mid-download) and discards the partial file. No-op otherwise. */
-    fun cancelUpdateDownload() {
-        updateDownloadJob?.cancel()
-        updateDownloadJob = null
-        if (updateDownloadState is UpdateDownloadState.Downloading) {
-            updateDownloadState = UpdateDownloadState.Idle
-            updateDownloadTag = null
-        }
-        runCatching {
-            File(getApplication<Application>().cacheDir, "rose-update.apk").delete()
-        }
-    }
-
-    private fun installApk(file: File) {
-        val context = getApplication<Application>()
-
-        // Same "allow installs from this source" gate the app already uses when
-        // opening a local .apk from the file list - required on API 26+ before
-        // ACTION_VIEW on a package-archive will actually work.
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !context.packageManager.canRequestPackageInstalls()) {
-            val settingsIntent = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES).apply {
-                data = Uri.parse("package:${context.packageName}")
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            }
-            try {
-                context.startActivity(settingsIntent)
-            } catch (e: Exception) {
-                updateDownloadState = UpdateDownloadState.Error(context.getString(R.string.update_error_open_install_settings))
-            }
-            // Deliberately leave updateDownloadState as ReadyToInstall - the UI
-            // keeps showing "Install" so the user can tap it again once they're
-            // back from Settings, without re-downloading anything.
-            return
-        }
-
-        val uri = FileProvider.getUriForFile(context, "${context.packageName}.provider", file)
-        val installIntent = Intent(Intent.ACTION_VIEW).apply {
-            setDataAndType(uri, "application/vnd.android.package-archive")
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        }
-        try {
-            context.startActivity(installIntent)
-        } catch (e: Exception) {
-            updateDownloadState = UpdateDownloadState.Error("No installer app found")
-        }
-    }
-
     override fun onCleared() {
         super.onCleared()
         unregisterMediaObserver()
         debouncedMediaRefreshJob?.cancel()
         stopWatchingDirectory()
-        updateDownloadJob?.cancel()
+        updates.clear()
     }
-}
-
-sealed class UpdateCheckResult {
-    object Idle : UpdateCheckResult()
-    object Checking : UpdateCheckResult()
-    data class UpdateAvailable(val info: UpdateInfo) : UpdateCheckResult()
-    object UpToDate : UpdateCheckResult()
-    data class Error(val message: String) : UpdateCheckResult()
-}
-
-data class UpdateInfo(
-    val tagName: String,
-    val releaseNotes: String,
-    val downloadUrl: String, // GitHub release page - fallback when no .apk asset is attached
-    val apkUrl: String? // Direct .apk asset URL, when the release has one; enables in-app download+install
-)
-
-sealed class UpdateDownloadState {
-    object Idle : UpdateDownloadState()
-    data class Downloading(val downloadedBytes: Long, val totalBytes: Long) : UpdateDownloadState() {
-        val progress: Float get() = if (totalBytes > 0) (downloadedBytes.toFloat() / totalBytes.toFloat()).coerceIn(0f, 1f) else 0f
-    }
-    data class ReadyToInstall(val file: File) : UpdateDownloadState()
-    data class Error(val message: String) : UpdateDownloadState()
 }

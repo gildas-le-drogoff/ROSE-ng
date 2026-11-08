@@ -9,14 +9,6 @@ object ApkSelector {
         val downloadUrl: String
     )
 
-    /**
-     * Selects the most appropriate APK asset download URL for the current device.
-     *
-     * Selection order:
-     * 1. Direct match for device's supported ABIs in preference order (e.g., arm64-v8a > armeabi-v7a).
-     * 2. Universal APK build (e.g., contains "universal" or "all-devices").
-     * 3. Fallback to the first available APK asset.
-     */
     fun selectBestApk(
         assets: List<Asset>,
         supportedAbis: Array<String> = Build.SUPPORTED_ABIS
@@ -25,7 +17,6 @@ object ApkSelector {
         if (apkAssets.isEmpty()) return null
         if (apkAssets.size == 1) return apkAssets.first().downloadUrl
 
-        // 1. Try matching against device supported ABIs in priority order
         for (abi in supportedAbis) {
             val matched = apkAssets.firstOrNull { matchesAbi(it.name, abi) }
             if (matched != null) {
@@ -33,13 +24,11 @@ object ApkSelector {
             }
         }
 
-        // 2. Try matching universal build
         val universal = apkAssets.firstOrNull { isUniversal(it.name) }
         if (universal != null) {
             return universal.downloadUrl
         }
 
-        // 3. Fallback to the first APK asset
         return apkAssets.first().downloadUrl
     }
 

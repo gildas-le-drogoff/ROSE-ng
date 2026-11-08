@@ -12,14 +12,11 @@ data class FileItem(
     val mimeType: String? = null,
     val itemCount: Int? = null,
     val virtualZipSource: File? = null,
-    // Full path of this entry inside the archive (e.g. "folder/sub/file.txt"),
-    // used for zip lookups since `name` is just the display basename.
     val zipEntryPath: String? = null,
     val bucketId: String? = null,
     val thumbnailPath: String? = null,
     val isEncrypted: Boolean = false
 ) {
-    // Secondary constructor for convenience that still does the IO hits
     constructor(file: File, itemCount: Int? = null, virtualZipSource: File? = null) : this(
         file = file,
         isDirectory = file.isDirectory,

@@ -1,5 +1,7 @@
 package dev.narayan.rose.ftpserver
 
+import dev.narayan.rose.roseNGLog
+
 import android.app.Service
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -11,12 +13,12 @@ import android.os.IBinder
 import android.os.Looper
 import android.widget.Toast
 import androidx.core.content.ContextCompat
-import dev.narayan.rose.SettingsManager
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.io.File
 import kotlin.concurrent.thread
+import dev.narayan.rose.data.settings.SettingsManager
 
 enum class FtpServerState {
     STOPPED,
@@ -63,7 +65,6 @@ class FtpServerService : Service() {
         try {
             unregisterReceiver(connectivityReceiver)
         } catch (e: Exception) {
-            // ignore
         }
         executeStop()
     }
@@ -106,7 +107,7 @@ class FtpServerService : Service() {
                     notification.updateNotification()
                 }
             } catch (e: Exception) {
-                e.printStackTrace()
+                roseNGLog.e("FtpServer", e) { "Failed to start FTP server" }
                 mainHandler.post {
                     _state.value = FtpServerState.STOPPED
                     wakeWifiLock.isAcquired = false
@@ -124,7 +125,7 @@ class FtpServerService : Service() {
         try {
             notification.stopForeground()
         } catch (e: Exception) {
-            e.printStackTrace()
+            roseNGLog.e("FtpServer", e) { "Failed to stop foreground notification" }
         }
 
         val server = ftpServer
@@ -139,7 +140,7 @@ class FtpServerService : Service() {
             try {
                 server.stop()
             } catch (e: Exception) {
-                e.printStackTrace()
+                roseNGLog.e("FtpServer", e) { "Failed to stop FTP server" }
             } finally {
                 mainHandler.post {
                     _state.value = FtpServerState.STOPPED

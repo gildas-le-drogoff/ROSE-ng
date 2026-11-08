@@ -37,7 +37,6 @@ class RoseFileSystemView(private val user: User) : FileSystemView {
         val canonicalTarget = try { target.canonicalFile } catch (e: Exception) { target.absoluteFile }
         val canonicalRoot = rootDirectory.canonicalFile
 
-        // Path traversal protection: ensure target file is within rootDirectory
         if (!canonicalTarget.path.startsWith(canonicalRoot.path)) {
             return homeFtpFile
         }
@@ -55,4 +54,3 @@ class RoseFileSystemView(private val user: User) : FileSystemView {
 
     override fun dispose() {}
 }
-

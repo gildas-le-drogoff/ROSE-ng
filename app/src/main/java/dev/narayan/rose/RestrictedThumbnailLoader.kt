@@ -4,35 +4,22 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
-import android.util.Log
 import android.util.LruCache
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayInputStream
 import java.io.File
 import android.net.Uri
+import dev.narayan.rose.domain.model.FileType
 
-/**
- * Loads thumbnails for images and videos located in restricted directories (Android/data, Android/obb)
- * where normal Java File / FileInputStream is blocked by Android Scoped Storage.
- *
- * It uses:
- * 1. SAF DocumentsProvider stream if SAF access is granted.
- * 2. Shizuku shell IPC streaming if Shizuku is authorized.
- *
- * All decoded bitmaps are cached in-memory with an LRU cache (RGB_565 for minimal memory footprint).
- * Any transient video extraction files are deleted immediately in a finally block, leaving zero
- * cache bloat on disk.
- */
 object RestrictedThumbnailLoader {
 
     private const val TAG = "RestrictedThumbLoader"
     private const val TARGET_SIZE = 160
 
-    // In-memory LRU cache: 80 items ~ 4-6 MB max in RGB_565
     private val memoryCache = object : LruCache<String, Bitmap>(80) {
         override fun sizeOf(key: String, value: Bitmap): Int {
-            return value.byteCount / 1024 // in KB
+            return value.byteCount / 1024
         }
     }
 
@@ -70,7 +57,6 @@ object RestrictedThumbnailLoader {
             } catch (e: Throwable) {}
         }
 
-        // Priority 1: SAF input stream if permission is present
         if (SafManager.hasPermission(context, path)) {
             val uri = SafManager.getContentUri(context, path)
             if (uri != null) {
@@ -81,12 +67,11 @@ object RestrictedThumbnailLoader {
                         if (sampled != null) return sampled
                     }
                 } catch (e: Throwable) {
-                    Log.w(TAG, "SAF image thumbnail failed for $path", e)
+                    roseNGLog.w(TAG, e) { "SAF image thumbnail failed for $path" }
                 }
             }
         }
 
-        // Priority 2: Shizuku direct FileDescriptor or stream
         if (ShizukuManager.isAvailable() && ShizukuManager.hasPermission()) {
             val pfd = ShizukuManager.openFileDescriptor(context, path, android.os.ParcelFileDescriptor.MODE_READ_ONLY)
             if (pfd != null) {
@@ -96,7 +81,7 @@ object RestrictedThumbnailLoader {
                         if (sampled != null) return sampled
                     }
                 } catch (e: Throwable) {
-                    Log.w(TAG, "Shizuku direct image thumbnail failed for $path", e)
+                    roseNGLog.w(TAG, e) { "Shizuku direct image thumbnail failed for $path" }
                 }
             }
 
@@ -109,7 +94,7 @@ object RestrictedThumbnailLoader {
                 val sampled = decodeSampledBitmapFromByteArray(bytes, TARGET_SIZE, TARGET_SIZE)
                 if (sampled != null) return sampled
             } catch (e: Throwable) {
-                Log.w(TAG, "Shizuku image thumbnail failed for $path", e)
+                roseNGLog.w(TAG, e) { "Shizuku image thumbnail failed for $path" }
             }
         }
 
@@ -130,7 +115,6 @@ object RestrictedThumbnailLoader {
         val retriever = MediaMetadataRetriever()
         var tempFile: File? = null
         try {
-            // Priority 1: SAF FileDescriptor
             if (SafManager.hasPermission(context, path)) {
                 val uri = SafManager.getContentUri(context, path)
                 if (uri != null) {
@@ -145,17 +129,16 @@ object RestrictedThumbnailLoader {
                             }
                         }
                     } catch (e: Throwable) {
-                        Log.w(TAG, "SAF video thumbnail failed for $path", e)
+                        roseNGLog.w(TAG, e) { "SAF video thumbnail failed for $path" }
                     }
 
-                    // Fallback for SAF without direct file descriptor support: stream header
                     try {
                         context.contentResolver.openInputStream(uri)?.use { input ->
                             tempFile = File.createTempFile("thumb_vid_saf_", ".tmp", context.cacheDir)
                             tempFile!!.outputStream().use { output ->
                                 val buffer = ByteArray(16384)
                                 var total = 0
-                                val limit = 4 * 1024 * 1024 // Read first 4MB
+                                val limit = 4 * 1024 * 1024
                                 while (total < limit) {
                                     val read = input.read(buffer)
                                     if (read == -1) break
@@ -174,12 +157,11 @@ object RestrictedThumbnailLoader {
                             }
                         }
                     } catch (e: Throwable) {
-                        Log.w(TAG, "SAF video stream thumbnail failed for $path", e)
+                        roseNGLog.w(TAG, e) { "SAF video stream thumbnail failed for $path" }
                     }
                 }
             }
 
-            // Priority 2: Shizuku direct FileDescriptor (zero-copy, instant!)
             if (ShizukuManager.isAvailable() && ShizukuManager.hasPermission()) {
                 val pfd = ShizukuManager.openFileDescriptor(context, path, android.os.ParcelFileDescriptor.MODE_READ_ONLY)
                 if (pfd != null) {
@@ -194,11 +176,10 @@ object RestrictedThumbnailLoader {
                             }
                         }
                     } catch (e: Throwable) {
-                        Log.w(TAG, "Shizuku direct video thumbnail failed for $path", e)
+                        roseNGLog.w(TAG, e) { "Shizuku direct video thumbnail failed for $path" }
                     }
                 }
 
-                // Fallback: stream header (up to 8MB) to a temporary file
                 val clean = ShizukuManager.normalize(path)
                 val escaped = ShizukuManager.shellEscape(clean)
                 tempFile = File.createTempFile("thumb_vid_", ".tmp", context.cacheDir)
@@ -217,7 +198,7 @@ object RestrictedThumbnailLoader {
                 }
             }
         } catch (e: Throwable) {
-            Log.w(TAG, "Video thumbnail failed for $path", e)
+            roseNGLog.w(TAG, e) { "Video thumbnail failed for $path" }
         } finally {
             try {
                 retriever.release()

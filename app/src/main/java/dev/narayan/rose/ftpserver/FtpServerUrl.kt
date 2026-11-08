@@ -1,17 +1,18 @@
 package dev.narayan.rose.ftpserver
 
+import dev.narayan.rose.roseNGLog
+
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.wifi.WifiManager
-import dev.narayan.rose.SettingsManager
 import java.net.Inet4Address
 import java.net.InetAddress
 import java.net.NetworkInterface
+import dev.narayan.rose.data.settings.SettingsManager
 
 object FtpServerUrl {
 
     fun getLocalIpAddress(context: Context): InetAddress? {
-        // 1. Try WifiManager
         try {
             val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
             val wifiInfo = wifiManager?.connectionInfo
@@ -26,10 +27,8 @@ object FtpServerUrl {
                 return InetAddress.getByAddress(bytes)
             }
         } catch (e: Exception) {
-            // fallback
         }
 
-        // 2. Try ConnectivityManager LinkProperties
         try {
             val cm = context.applicationContext.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
             val activeNetwork = cm?.activeNetwork
@@ -43,10 +42,8 @@ object FtpServerUrl {
                 }
             }
         } catch (e: Exception) {
-            // fallback
         }
 
-        // 3. Fallback: Iterate NetworkInterfaces (handles hotspot / tethering / wlan)
         try {
             val interfaces = NetworkInterface.getNetworkInterfaces() ?: return null
             for (intf in interfaces) {
@@ -58,7 +55,7 @@ object FtpServerUrl {
                 }
             }
         } catch (e: Exception) {
-            e.printStackTrace()
+            roseNGLog.e("FtpServer", e) { "Failed to resolve local IPv4 address" }
         }
 
         return null
@@ -76,4 +73,3 @@ object FtpServerUrl {
         return "ftp://$username$host:$port/"
     }
 }
-

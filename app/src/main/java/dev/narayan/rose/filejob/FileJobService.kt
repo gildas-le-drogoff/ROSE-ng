@@ -19,9 +19,6 @@ class FileJobService : Service() {
         const val CHANNEL_ID = "file_job_channel"
         const val SILENT_CHANNEL_ID = "file_job_silent_channel"
         const val COMPLETION_CHANNEL_ID = "file_job_completion_channel"
-        // Base id for the live foreground/progress notification of a given job.
-        // Kept per-job (not a single shared constant) so a download in progress
-        // doesn't get its notification clobbered/replaced by an unrelated copy/move.
         private const val NOTIFICATION_ID_BASE = 1001
         private const val COMPLETION_NOTIFICATION_ID_BASE = 2001
 
@@ -136,7 +133,6 @@ class FileJobService : Service() {
         }
     }
 
-    // job.id -> stable small int, so each concurrent job keeps its own notification slot.
     private val notificationIds = mutableMapOf<String, Int>()
     private var nextSlot = 0
     private val inFlightJobCount = java.util.concurrent.atomic.AtomicInteger(0)
@@ -201,17 +197,14 @@ class FileJobService : Service() {
             type = jobType,
             totalItems = sourcePaths.size
         )
-        // Register job synchronously before launching thread to avoid premature stopSelf race condition
         JobManager.updateJob(job)
         inFlightJobCount.incrementAndGet()
 
         val notificationId = notificationIdFor(job.id)
 
-        // Only show status bar notifications for downloads (Save offline)
         val isDownload = jobType is FileJobType.Download
         val channelToUse = if (isDownload) CHANNEL_ID else SILENT_CHANNEL_ID
 
-        // Foreground notification must be posted synchronously here
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             startForeground(notificationId, createNotification(job, channelToUse), ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
         } else {
@@ -219,7 +212,6 @@ class FileJobService : Service() {
         }
 
         FileOperationRunner.execute(applicationContext, job, { updatedJob ->
-            // Only update live progress in notification shade for downloads
             if (isDownload) {
                 updateNotification(notificationId, updatedJob, channelToUse)
             }
@@ -228,21 +220,17 @@ class FileJobService : Service() {
             lastNotifUpdateMap.remove(notificationId)
             (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).cancel(notificationId)
 
-            // Only show completion notifications for downloads if not cancelled
             val isCancelled = JobManager.isCancelled(job.id)
             if (isDownload && !isCancelled) {
                 showCompletionNotification(job, success, notificationId)
             }
 
-            // Only drop foreground state / stop the service once nothing else
-            // is running - a second job may have started while this one finished.
             val remaining = inFlightJobCount.decrementAndGet()
             if (remaining <= 0 && JobManager.activeJobs.value.isEmpty()) {
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelfResult(startId)
             } else {
                 stopForeground(STOP_FOREGROUND_DETACH)
-                // Maintain foreground status with one of the remaining active jobs
                 val remainingJob = JobManager.activeJobs.value.values.firstOrNull()
                 if (remainingJob != null) {
                     val remNotifId = notificationIdFor(remainingJob.id)
@@ -308,8 +296,6 @@ class FileJobService : Service() {
             .setContentTitle(title)
             .setContentText(contentText)
             .setSmallIcon(android.R.drawable.stat_sys_download)
-            // Unknown size -> indeterminate spinner instead of a bar frozen at 0%.
-            // Known size -> a real, moving progress bar.
             .setProgress(100, progressPercent, job.isIndeterminate)
             .setOnlyAlertOnce(true)
             .setOngoing(true)
@@ -375,7 +361,6 @@ class FileJobService : Service() {
         val notifId = COMPLETION_NOTIFICATION_ID_BASE + (job.id.hashCode() and 0xFFFF)
         notificationManager.notify(notifId, notification)
 
-        // Automatically disappear completion notification after 5 seconds
         android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
             try {
                 notificationManager.cancel(notifId)

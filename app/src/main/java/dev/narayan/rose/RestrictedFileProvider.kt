@@ -12,11 +12,6 @@ import android.util.Base64
 import android.webkit.MimeTypeMap
 import java.io.File
 
-/**
- * ContentProvider that securely exposes restricted files (such as inside Android/data
- * or Android/obb) to external apps (like video players) via direct seekable ParcelFileDescriptors
- * powered by Shizuku / SAF without copying files to cache or blocking the UI thread.
- */
 class RestrictedFileProvider : ContentProvider() {
 
     override fun onCreate(): Boolean = true
@@ -88,7 +83,6 @@ class RestrictedFileProvider : ContentProvider() {
             ParcelFileDescriptor.MODE_READ_ONLY
         }
 
-        // Fast path 1: Directly readable file (e.g. Android 10, or accessible directly)
         val directFile = File(path)
         if (directFile.exists() && directFile.canRead()) {
             try {
@@ -96,7 +90,6 @@ class RestrictedFileProvider : ContentProvider() {
             } catch (_: Throwable) {}
         }
 
-        // Fast path 2: Shizuku privileged FileDescriptor (direct kernel access to Android/data)
         if (ShizukuManager.isAvailable() && ShizukuManager.hasPermission()) {
             val pfd = ShizukuManager.openFileDescriptor(ctx, path, modeBits)
             if (pfd != null) {
@@ -104,7 +97,6 @@ class RestrictedFileProvider : ContentProvider() {
             }
         }
 
-        // Fast path 3: SAF ContentResolver if permission is granted
         if (SafManager.hasPermission(ctx, path)) {
             val safUri = SafManager.getContentUri(ctx, path)
             if (safUri != null) {

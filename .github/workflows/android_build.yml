@@ -1,36 +1,162 @@
-name: Android Build
+# Manual-only release build (workflow_dispatch). No push/tag triggers.
+#
+# - Main/tag build: creates stable draft release v{versionName}.
+# - Non-main branch build: creates draft prerelease v{versionName}-Preview-{run number}.
+# - The app has no product flavors: `assembleRelease` produces ABI-split APKs
+#   (see `splits.abi` in app/build.gradle.kts). Published assets:
+#     - roseNG-v{version}-universal.apk
+#     - roseNG-v{version}-arm64-v8a.apk
+#   (armeabi-v7a is no longer built; x86_64 is skipped: release `ndk.abiFilters` strips x86_64 native libs.)
+# - Required secrets: KEYSTORE_BASE64, KEYSTORE_PASSWORD, KEY_ALIAS (KEY_PASSWORD optional,
+#   defaults to KEYSTORE_PASSWORD).
+# - GitHub Release: always draft; publish from the Releases UI when ready.
+
+name: Build and release
 
 on:
-  push:
-    branches: [ "main" ]
-  pull_request:
-    branches: [ "main" ]
   workflow_dispatch:
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
     steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4
-        with:
-          java-version: '17'
-          distribution: 'temurin'
-          cache: gradle
-
-      - name: Grant Execute Permission for Gradlew
+      - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
-      - name: Build Debug APK
-        run: ./gradlew assembleDebug --stacktrace
-
-      - name: Upload Debug APK Artifact
-        uses: actions/upload-artifact@v4
+      - uses: actions/setup-java@v5
         with:
-          name: ROSE-debug-apks
-          path: app/build/outputs/apk/debug/*.apk
+          distribution: temurin
+          java-version: "25"
 
+      - uses: android-actions/setup-android@v4
+        with:
+          packages: ''
+          log-accepted-android-sdk-licenses: false
+
+      # compileSdk = release(37) { minorApiLevel = 2 } -> platforms;android-37.2
+      - name: Install Android SDK packages
+        run: |
+          set -euo pipefail
+          if [ ! -d "$ANDROID_HOME/platforms/android-37.2" ] || [ ! -d "$ANDROID_HOME/build-tools/37.0.0" ]; then
+            sdkmanager --install "platforms;android-37.2" "build-tools;37.0.0" --channel=3
+          else
+            echo "Android SDK 37.2 and build-tools 37.0.0 already present."
+          fi
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v5
+
+      - name: Resolve version label
+        id: version
+        run: |
+          set -euo pipefail
+          VERSION=$(grep -oE 'versionName = "[^"]+"' app/build.gradle.kts | head -1 | sed -E 's/versionName = "([^"]+)"/\1/')
+          if [ -z "$VERSION" ]; then echo "Could not parse versionName from app/build.gradle.kts"; exit 1; fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Building versionName=$VERSION (tag will be v${VERSION})"
+
+      - name: Configure signing
+        run: |
+          set -euo pipefail
+          missing=()
+          [ -n "$KEYSTORE_B64" ] || missing+=("KEYSTORE_BASE64")
+          [ -n "$KS_PASS" ] || missing+=("KEYSTORE_PASSWORD")
+          [ -n "$K_ALIAS" ] || missing+=("KEY_ALIAS")
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "::error::Missing signing secrets: ${missing[*]}"
+            exit 1
+          fi
+          umask 077
+          printf '%s' "$KEYSTORE_B64" | base64 -d > roseNG-release.keystore
+          KEY_PASS_EFFECTIVE="${KEY_PASS:-$KS_PASS}"
+          {
+            echo "storeFile=roseNG-release.keystore"
+            echo "storePassword=$KS_PASS"
+            echo "keyPassword=$KEY_PASS_EFFECTIVE"
+            echo "keyAlias=$K_ALIAS"
+          } > keystore.properties
+        env:
+          KEYSTORE_B64: ${{ secrets.KEYSTORE_BASE64 }}
+          KS_PASS: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_PASS: ${{ secrets.KEY_PASSWORD }}
+          K_ALIAS: ${{ secrets.KEY_ALIAS }}
+
+      - name: Build release APKs
+        run: ./gradlew :app:assembleRelease --no-configuration-cache --console=plain
+
+      - name: Collect and rename release assets
+        run: |
+          set -euo pipefail
+          version="${{ steps.version.outputs.version }}"
+          src="app/build/outputs/apk/release"
+          out="release-assets"
+          mkdir -p "$out"
+
+          for abi in universal arm64-v8a; do
+            apk="$src/app-${abi}-release.apk"
+            if [ ! -f "$apk" ]; then
+              echo "::error::Expected APK not found: $apk"
+              find app/build/outputs/apk -name '*.apk' -print || true
+              exit 1
+            fi
+            cp "$apk" "$out/roseNG-v${version}-${abi}.apk"
+          done
+
+          ls -la "$out"
+
+      - name: Generate GitHub Artifact Attestations
+        uses: actions/attest@v4
+        with:
+          subject-path: 'release-assets/*'
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: roseNG-v${{ steps.version.outputs.version }}-release
+          path: release-assets/*
+
+      - name: Create stable draft GitHub Release (tag v${{ steps.version.outputs.version }})
+        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          token: ${{ github.token }}
+          draft: true
+          tag_name: v${{ steps.version.outputs.version }}
+          name: v${{ steps.version.outputs.version }}
+          target_commitish: ${{ github.sha }}
+          body: |
+            **Release assets**
+          files: release-assets/*
+          generate_release_notes: true
+
+      - name: Create preview draft GitHub Release
+        if: startsWith(github.ref, 'refs/heads/') && github.ref != 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          token: ${{ github.token }}
+          draft: true
+          prerelease: true
+          make_latest: false
+          tag_name: v${{ steps.version.outputs.version }}-Preview-${{ github.run_number }}
+          name: v${{ steps.version.outputs.version }}-Preview-${{ github.run_number }}
+          target_commitish: ${{ github.sha }}
+          body: |
+            ### In preview
+            - one
+            - two
+            > [!WARNING]
+            > This is a preview build intended for testing. It may contain bugs, unfinished changes, or regressions. Do not install it if you want a stable experience.
+            > Back up your roseNG data before installing and report any problems through the repository's issue tracker.
+
+            Built from `${{ github.ref_name }}` at commit `${{ github.sha }}`.
+          files: release-assets/*

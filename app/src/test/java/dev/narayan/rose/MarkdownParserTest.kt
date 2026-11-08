@@ -122,7 +122,7 @@ class MarkdownParserTest {
     @Test
     fun testLinksAndImagesParsing() {
         val markdown = """
-            [ROSE Project](https://github.com/NarayanChetri/ROSE)
+            [ROSE Project](https://github.com/gildas-le-drogoff/ROSE-ng)
             ![Logo](assets/logo.png)
         """.trimIndent()
 
@@ -135,7 +135,7 @@ class MarkdownParserTest {
         fun search(node: Node) {
             if (node is Link) {
                 linkFound = true
-                assertEquals("https://github.com/NarayanChetri/ROSE", node.destination)
+                assertEquals("https://github.com/gildas-le-drogoff/ROSE-ng", node.destination)
             }
             if (node is Image) {
                 imageFound = true
@@ -227,4 +227,3 @@ class MarkdownParserTest {
         assertEquals(input, sanitized)
     }
 }
-

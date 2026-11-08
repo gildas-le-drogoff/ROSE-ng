@@ -1,6 +1,9 @@
 package dev.narayan.rose
 
+import androidx.compose.ui.res.vectorResource
+import androidx.annotation.DrawableRes
 import androidx.compose.animation.animateColorAsState
+import dev.narayan.rose.ui.icons.AppIcons
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
@@ -21,14 +24,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.Article
-import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
-import androidx.compose.material.icons.automirrored.filled.Subject
-import androidx.compose.material.icons.filled.Description
-import androidx.compose.material.icons.filled.PictureAsPdf
-import androidx.compose.material.icons.filled.Slideshow
-import androidx.compose.material.icons.filled.TableChart
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -44,23 +39,23 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import dev.narayan.rose.domain.model.FileItem
 
-/**
- * Sub-categories for document files inside the Documents category.
- */
 enum class DocumentTypeCategory(
     val id: String,
     val label: String,
-    val icon: ImageVector,
+    @DrawableRes val iconRes: Int,
     val accentColor: Color
 ) {
-    ALL("all", "All", Icons.Default.Description, Color(0xFF4C9A72)),
-    PDF("pdf", "PDF", Icons.Default.PictureAsPdf, Color(0xFFE53935)),
-    DOC("doc", "DOC", Icons.AutoMirrored.Filled.Article, Color(0xFF1E88E5)),
-    TXT("txt", "TXT", Icons.AutoMirrored.Filled.Subject, Color(0xFF43A047)),
-    XLS("xls", "XLS", Icons.Default.TableChart, Color(0xFF2E7D32)),
-    PPT("ppt", "PPT", Icons.Default.Slideshow, Color(0xFFE65100)),
-    OTHER("other", "Other", Icons.AutoMirrored.Filled.InsertDriveFile, Color(0xFF78909C));
+    ALL("all", "All", R.drawable.ic_description_fill, Color(0xFF4C9A72)),
+    PDF("pdf", "PDF", R.drawable.ic_picture_as_pdf_fill, Color(0xFFE53935)),
+    DOC("doc", "DOC", R.drawable.ic_article_fill, Color(0xFF1E88E5)),
+    TXT("txt", "TXT", R.drawable.ic_subject, Color(0xFF43A047)),
+    XLS("xls", "XLS", R.drawable.ic_table_chart_fill, Color(0xFF2E7D32)),
+    PPT("ppt", "PPT", R.drawable.ic_slideshow_fill, Color(0xFFE65100)),
+    OTHER("other", "Other", R.drawable.ic_draft_fill, Color(0xFF78909C));
+
+    val icon: ImageVector @Composable get() = ImageVector.vectorResource(iconRes)
 
     fun matches(item: FileItem): Boolean {
         val ext = item.extension.lowercase()
@@ -96,9 +91,6 @@ enum class DocumentTypeCategory(
     }
 }
 
-/**
- * Computes the file count for each document sub-category.
- */
 fun computeDocumentCategoryCounts(files: List<FileItem>): Map<DocumentTypeCategory, Int> {
     val counts = mutableMapOf<DocumentTypeCategory, Int>()
     DocumentTypeCategory.entries.forEach { counts[it] = 0 }
@@ -114,19 +106,12 @@ fun computeDocumentCategoryCounts(files: List<FileItem>): Map<DocumentTypeCatego
     return counts
 }
 
-/**
- * Generates an ordered list of categories where:
- * 1. "All" is always fixed at index 0.
- * 2. Remaining categories are ordered dynamically by highest file count first (descending).
- * 3. Only categories with count > 0 are shown, or if all are 0, standard fallback tabs are returned.
- */
 fun getOrderedDocumentCategories(
     files: List<FileItem>,
     counts: Map<DocumentTypeCategory, Int> = computeDocumentCategoryCounts(files)
 ): List<DocumentTypeCategory> {
     val subCategories = DocumentTypeCategory.entries.filter { it != DocumentTypeCategory.ALL }
 
-    // Sort descending by count, with stable tie-breaker
     val sortedSubCategories = subCategories.sortedWith(
         compareByDescending<DocumentTypeCategory> { counts[it] ?: 0 }
             .thenBy { it.ordinal }
@@ -146,17 +131,11 @@ fun getOrderedDocumentCategories(
     }
 }
 
-/**
- * Filters a list of document FileItems by the specified sub-category.
- */
 fun filterDocumentFiles(files: List<FileItem>, category: DocumentTypeCategory): List<FileItem> {
     if (category == DocumentTypeCategory.ALL) return files
     return files.filter { category.matches(it) }
 }
 
-/**
- * Row of Material 3 styled filter chips for Document sub-categories.
- */
 @Composable
 fun DocumentFilterChipsRow(
     categories: List<DocumentTypeCategory>,
@@ -280,4 +259,3 @@ fun DocumentFilterChipsRow(
         }
     }
 }
-

@@ -1,5 +1,7 @@
 package dev.narayan.rose.ftpserver
 
+import dev.narayan.rose.roseNGLog
+
 import android.content.Context
 import android.net.wifi.WifiManager
 import android.os.PowerManager
@@ -22,7 +24,7 @@ class WakeWifiLock(context: Context, tag: String) {
             if (field == value) return
             try {
                 if (value) {
-                    wakeLock?.acquire(24 * 60 * 60 * 1000L /* 24 hours */)
+                    wakeLock?.acquire(24 * 60 * 60 * 1000L )
                     wifiLock?.acquire()
                 } else {
                     if (wakeLock?.isHeld == true) {
@@ -33,9 +35,8 @@ class WakeWifiLock(context: Context, tag: String) {
                     }
                 }
             } catch (e: Exception) {
-                e.printStackTrace()
+                roseNGLog.e("FtpServer", e) { "Failed to toggle wake/wifi locks" }
             }
             field = value
         }
 }
-

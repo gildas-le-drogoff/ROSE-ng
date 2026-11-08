@@ -12,7 +12,7 @@
     <string name="about_contact_email">Narayanchetri.dev@gmail.com</string>
     <string name="about_star_github">Star on GitHub</string>
     <string name="about_star_github_desc">Enjoying ROSE? Starring the repository helps a lot!</string>
-    <string name="about_repo_url">https://github.com/NarayanChetri/ROSE</string>
+    <string name="about_repo_url">https://github.com/gildas-le-drogoff/ROSE-ng</string>
     <string name="about_check_for_updates">Check for updates</string>
     <string name="about_checking_for_updates">Checking for updates…</string>
 
@@ -444,6 +444,7 @@
     <string name="update_download_failed_http">Download failed (HTTP %1$d)</string>
     <string name="update_download_failed">Download failed</string>
     <string name="update_error_open_install_settings">Couldn\'t open install-permission settings</string>
+    <string name="update_error_no_installer">No installer app found</string>
 
     <!-- Toasts & General Feedback -->
     <string name="toast_notification_permission_recommended">Notification permission is recommended for background tasks</string>

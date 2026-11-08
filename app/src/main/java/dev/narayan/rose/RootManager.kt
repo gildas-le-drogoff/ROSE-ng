@@ -1,7 +1,6 @@
 package dev.narayan.rose
 
 import android.os.Environment
-import android.util.Log
 import com.topjohnwu.superuser.Shell
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -10,36 +9,26 @@ import java.io.File
 import java.io.InputStream
 import java.io.InputStreamReader
 import java.io.OutputStream
+import dev.narayan.rose.domain.model.FileItem
 
-/**
- * High-performance, isolated Root management engine.
- *
- * Designed to mirror Material Files' root safety:
- * 1. Zero root commands or SU checks run when root access is disabled in settings.
- * 2. Uses libsu with Mount Master for global namespace operations.
- * 3. Safely handles symlinks, read-only partitions, and file operations.
- */
+private val MULTI_SLASH = Regex("/+")
+
 object RootManager {
 
     private const val TAG = "RootManager"
 
     init {
         try {
-            // Configure libsu with Mount Master and redirect stderr so root shells have global mount visibility
             Shell.setDefaultBuilder(
                 Shell.Builder.create()
                     .setFlags(Shell.FLAG_MOUNT_MASTER or Shell.FLAG_REDIRECT_STDERR)
                     .setTimeout(15)
             )
         } catch (e: Throwable) {
-            Log.w(TAG, "Failed to initialize Shell builder", e)
+            roseNGLog.w(TAG, e) { "Failed to initialize Shell builder" }
         }
     }
 
-    /**
-     * Checks whether root access is available and granted.
-     * Safe to call from background threads.
-     */
     fun isRootAvailable(): Boolean {
         return try {
             Shell.isAppGrantedRoot() == true || (Shell.getShell().isRoot)
@@ -48,29 +37,19 @@ object RootManager {
         }
     }
 
-    /**
-     * Shell escapes arguments safely using single quote wrapping:
-     * replaces ' with '\''
-     */
     fun shellEscape(arg: String): String {
         return "'" + arg.replace("'", "'\\''") + "'"
     }
 
-    /**
-     * Normalizes a root path.
-     */
     fun normalize(path: String): String {
         if (path.isEmpty()) return "/"
-        var normalized = path.replace(Regex("/+"), "/")
+        var normalized = if (path.contains("//")) path.replace(MULTI_SLASH, "/") else path
         if (normalized.length > 1 && normalized.endsWith("/")) {
             normalized = normalized.substring(0, normalized.length - 1)
         }
         return normalized
     }
 
-    /**
-     * Determines whether [path] is outside standard user storage volumes.
-     */
     fun isRootPath(path: String): Boolean {
         if (SafManager.isSafUri(path)) return false
         val norm = ShizukuManager.normalize(path)
@@ -82,9 +61,6 @@ object RootManager {
         return norm.startsWith("/")
     }
 
-    /**
-     * High performance listing of files via Root shell using batch stat.
-     */
     fun listFilesSync(path: String, showHiddenFiles: Boolean = true): List<FileItem> {
         val results = mutableListOf<FileItem>()
         val cleanPath = normalize(path)
@@ -92,7 +68,6 @@ object RootManager {
         try {
             val escapedPath = shellEscape(cleanPath)
 
-            // Step 1: Pre-calculate immediate child counts for subdirectories if possible
             val childCounts = mutableMapOf<String, Int>()
             try {
                 val countCmd = "find $escapedPath -mindepth 2 -maxdepth 2 2>/dev/null"
@@ -112,12 +87,9 @@ object RootManager {
                     }
                 }
             } catch (e: Throwable) {
-                Log.w(TAG, "Error counting subfolder items for $cleanPath", e)
+                roseNGLog.w(TAG, e) { "Error counting subfolder items for $cleanPath" }
             }
 
-            // Step 2: High-performance directory listing using toybox cd and stat
-            // Navigates directly into the folder and iterates * and .*, cleanly skipping . and ..
-            // Using [ -d "${'$'}f" ] to detect directories (which automatically resolves directory symlinks)
             val listCmd = """
                 cd $escapedPath 2>/dev/null || exit 1
                 for f in * .[!.]* ..?*; do
@@ -129,7 +101,7 @@ object RootManager {
             """.trimIndent()
 
             val statResult = Shell.cmd(listCmd).exec()
-            Log.d(TAG, "listFilesSync($cleanPath) statResult code: ${statResult.code}, lines: ${statResult.out.size}")
+            roseNGLog.d(TAG) { "listFilesSync($cleanPath) statResult code: ${statResult.code}, lines: ${statResult.out.size}" }
 
             if (statResult.out.isNotEmpty()) {
                 statResult.out.forEach { line ->
@@ -169,11 +141,10 @@ object RootManager {
                 }
             }
 
-            // Fallback: If results are still empty, try ls -1A
             if (results.isEmpty()) {
                 val lsCmd = "ls -1A $escapedPath 2>/dev/null"
                 val lsResult = Shell.cmd(lsCmd).exec()
-                Log.d(TAG, "listFilesSync($cleanPath) fallback lsResult lines: ${lsResult.out.size}")
+                roseNGLog.d(TAG) { "listFilesSync($cleanPath) fallback lsResult lines: ${lsResult.out.size}" }
                 if (lsResult.out.isNotEmpty()) {
                     lsResult.out.forEach { nameLine ->
                         val name = nameLine.trim()
@@ -199,7 +170,7 @@ object RootManager {
                 }
             }
         } catch (e: Throwable) {
-            Log.e(TAG, "Error listing root files for $cleanPath", e)
+            roseNGLog.e(TAG, e) { "Error listing root files for $cleanPath" }
         }
 
         return results.distinctBy { it.file.absolutePath }
@@ -214,18 +185,12 @@ object RootManager {
         return Shell.cmd(cmd).exec().isSuccess
     }
 
-    /**
-     * Checks if a path is a directory via Root shell.
-     */
     fun isDirectory(path: String): Boolean {
         val clean = normalize(path)
         val cmd = "[ -d ${shellEscape(clean)} ]"
         return Shell.cmd(cmd).exec().isSuccess
     }
 
-    /**
-     * Gets accurate file size via Root stat.
-     */
     fun getFileSize(path: String): Long {
         val clean = normalize(path)
         val cmd = "stat -c '%s' ${shellEscape(clean)} 2>/dev/null"
@@ -235,9 +200,6 @@ object RootManager {
         } else 0L
     }
 
-    /**
-     * Calculates folder size recursively via Root du.
-     */
     fun getFolderSize(path: String): Long {
         val clean = normalize(path)
         val cmd = "du -sk ${shellEscape(clean)} 2>/dev/null"
@@ -248,9 +210,6 @@ object RootManager {
         } else 0L
     }
 
-    /**
-     * Creates a directory with root permissions.
-     */
     fun createFolder(path: String): Boolean {
         val clean = normalize(path)
         val cmd = "mkdir -p ${shellEscape(clean)}"
@@ -258,9 +217,6 @@ object RootManager {
         return res.isSuccess
     }
 
-    /**
-     * Creates a directory with root permissions.
-     */
     fun createFolder(parentPath: String, name: String): Boolean {
         val parent = normalize(parentPath)
         val target = if (parent == "/") "/$name" else "$parent/$name"
@@ -269,9 +225,6 @@ object RootManager {
         return res.isSuccess
     }
 
-    /**
-     * Creates an empty file with root permissions.
-     */
     fun createFile(path: String): Boolean {
         val clean = normalize(path)
         val cmd = "touch ${shellEscape(clean)}"
@@ -279,20 +232,14 @@ object RootManager {
         return res.isSuccess
     }
 
-    /**
-     * Deletes a file or directory recursively with root permissions.
-     */
     fun delete(path: String): Boolean {
         val clean = normalize(path)
-        if (clean == "/" || clean.isEmpty()) return false // Extreme safety check: never rm -rf /
+        if (clean == "/" || clean.isEmpty()) return false
         val cmd = "rm -rf ${shellEscape(clean)}"
         val res = Shell.cmd(cmd).exec()
         return res.isSuccess
     }
 
-    /**
-     * Renames a file or directory with root permissions.
-     */
     fun rename(path: String, newName: String): Boolean {
         val clean = normalize(path)
         if (clean == "/" || clean.isEmpty()) return false
@@ -303,9 +250,6 @@ object RootManager {
         return res.isSuccess
     }
 
-    /**
-     * Copies a file or directory using native root cp (-af preserves attributes).
-     */
     fun copy(sourcePath: String, targetPath: String): Boolean {
         val cleanSrc = normalize(sourcePath)
         val cleanDst = normalize(targetPath)
@@ -318,9 +262,6 @@ object RootManager {
         return res.isSuccess
     }
 
-    /**
-     * Moves a file or directory using native root mv.
-     */
     fun move(sourcePath: String, targetPath: String): Boolean {
         val cleanSrc = normalize(sourcePath)
         val cleanDst = normalize(targetPath)
@@ -333,28 +274,18 @@ object RootManager {
         return res.isSuccess
     }
 
-    /**
-     * Remounts a partition as Read-Write if possible.
-     */
     fun remountRw(path: String): Boolean {
         val clean = normalize(path)
         val cmd = "mount -o remount,rw ${shellEscape(clean)} 2>/dev/null || mount -o remount,rw / 2>/dev/null"
         return Shell.cmd(cmd).exec().isSuccess
     }
 
-    /**
-     * Restores SELinux security context for [path].
-     * Critical when creating or moving files into /data/data/<package>.
-     */
     fun restorecon(path: String): Boolean {
         val clean = normalize(path)
         val cmd = "restorecon -R ${shellEscape(clean)} 2>/dev/null"
         return Shell.cmd(cmd).exec().isSuccess
     }
 
-    /**
-     * Runs a sync shell command and returns the exit code.
-     */
     fun runCommandSync(command: String): Int {
         return try {
             Shell.cmd(command).exec().code
@@ -363,18 +294,12 @@ object RootManager {
         }
     }
 
-    /**
-     * Opens an InputStream to read a file with root permissions using cat.
-     */
     fun openInputStream(path: String): InputStream {
         val clean = normalize(path)
         val process = Runtime.getRuntime().exec(arrayOf("su", "-c", "cat ${shellEscape(clean)}"))
         return process.inputStream
     }
 
-    /**
-     * Opens an OutputStream to write to a file with root permissions using cat > path.
-     */
     fun openOutputStream(path: String): OutputStream {
         val clean = normalize(path)
         val parent = File(clean).parent
