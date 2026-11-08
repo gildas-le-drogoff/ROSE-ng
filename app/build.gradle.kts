@@ -34,7 +34,7 @@ android {
         abi {
             isEnable = true
             reset()
-            include("arm64-v8a", "x86_64")
+            include("arm64-v8a", "armeabi-v7a", "x86_64")
             isUniversalApk = true
         }
     }
@@ -73,8 +73,7 @@ android {
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             signingConfig = signingConfigs.findByName("release")
-            //noinspection ChromeOsAbiSupport
-            ndk { abiFilters += listOf("arm64-v8a") }
+            // No ndk.abiFilters here: each ABI split must package its own native libs.
         }
         debug {
             // Uses standard debug signing for local debug builds
@@ -147,7 +146,7 @@ dependencies {
     debugImplementation(libs.androidx.compose.ui.tooling)
 }
 
-val abiCodes = mapOf("arm64-v8a" to 1, "x86_64" to 2)
+val abiCodes = mapOf("armeabi-v7a" to 1, "arm64-v8a" to 2, "x86_64" to 3)
 
 androidComponents {
     onVariants { variant ->

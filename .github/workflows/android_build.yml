@@ -6,7 +6,8 @@
 #   (see `splits.abi` in app/build.gradle.kts). Published assets:
 #     - roseNG-v{version}-universal.apk
 #     - roseNG-v{version}-arm64-v8a.apk
-#   (armeabi-v7a is no longer built; x86_64 is skipped: release `ndk.abiFilters` strips x86_64 native libs.)
+#     - roseNG-v{version}-armeabi-v7a.apk
+#     - roseNG-v{version}-x86_64.apk
 # - Required secrets: KEYSTORE_BASE64, KEYSTORE_PASSWORD, KEY_ALIAS (KEY_PASSWORD optional,
 #   defaults to KEYSTORE_PASSWORD).
 # - GitHub Release: always draft; publish from the Releases UI when ready.
@@ -102,7 +103,7 @@ jobs:
           out="release-assets"
           mkdir -p "$out"
 
-          for abi in universal arm64-v8a; do
+          for abi in universal arm64-v8a armeabi-v7a x86_64; do
             apk="$src/app-${abi}-release.apk"
             if [ ! -f "$apk" ]; then
               echo "::error::Expected APK not found: $apk"
@@ -132,6 +133,8 @@ jobs:
             **APKs**
             - `roseNG-v${{ steps.version.outputs.version }}-universal.apk` — recommended for most devices
             - `roseNG-v${{ steps.version.outputs.version }}-arm64-v8a.apk` — 64-bit ARM (arm64-v8a) devices
+            - `roseNG-v${{ steps.version.outputs.version }}-armeabi-v7a.apk` — 32-bit ARM (armeabi-v7a) devices
+            - `roseNG-v${{ steps.version.outputs.version }}-x86_64.apk` — x86_64 devices and emulators
           files: release-assets/*
           generate_release_notes: true
 
